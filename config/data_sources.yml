@@ -1,0 +1,25 @@
+# =============================================================================
+# Data source names
+# =============================================================================
+# One display string per dataset key, shown in each pack's section-divider
+# subtitles (see R/pptx_section_subtitles.R) alongside the filter value(s)
+# used from that dataset. Loaded once by R/load_tumour_config.R
+# (get_data_source_name()) — not tumour-specific, since each dataset key names
+# the same underlying NHS/NDRS publication for every tumour.
+#
+# Keys match the null/scalar/array dataset fields in config/tumours.yml, minus
+# the three *_public fields' detailed counterparts being the same source (the
+# "detailed" and "public" CWT keys are genuinely different releases, kept
+# separate below).
+
+cwt_fds_detailed: "NHSE CWT (internal extract)"
+cwt_31day_detailed: "NHSE CWT (internal extract)"
+cwt_62day_detailed: "NHSE CWT (internal extract)"
+cwt_fds_public: "NHSE CWT (public release)"
+cwt_31day_public: "NHSE CWT (public release)"
+cwt_62day_public: "NHSE CWT (public release)"
+cwt_62day_public_comm: "NHSE CWT (public release)"
+staging_completeness: "NDRS RCRD"
+staging_demographics: "NDRS RCRD"
+lwbc: "NDRS COSD"
+treatment_variation: "NATCAN"

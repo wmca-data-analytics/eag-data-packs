@@ -1,0 +1,325 @@
+# =============================================================================
+# Alliance configurations
+# =============================================================================
+# Centralised configuration for all alliances. One top-level key per alliance,
+# keyed by alliance code (e.g. WMCA, EMCA). To add a new alliance, append a
+# new top-level block here using the same field set.
+#
+# Loaded by R/load_alliance_config.R into the .alliance_configs list. Only the
+# alliance whose `code:` matches the global `alliance` variable is loaded.
+# See R/load_alliance_config.R for the post-processing applied (e.g. org_lookup
+# -> data.frame, geography maps -> named character vectors).
+
+
+# =============================================================================
+# WMCA - West Midlands Cancer Alliance
+# =============================================================================
+WMCA:
+
+  # Metadata
+  code: WMCA
+  alliance: West Midlands
+  meeting_name: EAG
+  initial: W
+
+  # Trust codes (15 trusts)
+  trust_codes:
+    - RRJ
+    - RRK
+    - RQ3
+    - RNA
+    - RL4
+    - RXK
+    - RBK
+    - RKB
+    - RLT
+    - RJC
+    - RWP
+    - RLQ
+    - RL1
+    - RXW
+    - RJE
+
+  # Organisation lookup (code -> display name -> abbreviation)
+  # Parallel columns; loader converts to a data.frame.
+  # These strings can be updated to reflect whatever text you want to use.
+  org_lookup:
+    ORG.CODE:
+      - RRJ
+      - RRK
+      - RQ3
+      - RNA
+      - RL4
+      - RXK
+      - RBK
+      - RKB
+      - RLT
+      - RJC
+      - RWP
+      - RLQ
+      - RL1
+      - RXW
+      - RJE
+    ORG.NAME:
+      - "Royal Orthopadic Hospital"                       # RRJ
+      - "University Hospitals Birmingham"                 # RRK
+      - "Birmingham Women's & Children's"                 # RQ3
+      - "Dudley Group"                                    # RNA
+      - "Royal Wolverhampton"                             # RL4
+      - "Sandwell & West Birmingham"                      # RXK
+      - "Walsall"                                         # RBK
+      - "University Hospitals Coventry & Warwickshire"    # RKB
+      - "George Eliot"                                    # RLT
+      - "South Warwickshire"                              # RJC
+      - "Worcestershire Acute"                            # RWP
+      - "Wye Valley"                                      # RLQ
+      - "Robert Jones & Agnes Hunt"                       # RL1
+      - "Shrewsbury & Telford"                            # RXW
+      - "University Hospitals of North Midlands"          # RJE
+    ORG.ABBR:
+      - "Royal Orthopadic"                  # RRJ
+      - "UHB"                               # RRK
+      - "Birmingham Women's & Children's"   # RQ3
+      - "Dudley"                            # RNA
+      - "RWT"                               # RL4
+      - "SWB"                               # RXK
+      - "Walsall"                           # RBK
+      - "UHCW"                              # RKB
+      - "GEH"                               # RLT
+      - "SWark"                             # RJC
+      - "WAH"                               # RWP
+      - "Wye Valley"                        # RLQ
+      - "Robert Jones & Agnes Hunt"         # RL1
+      - "SaTH"                              # RXW
+      - "UHNM"                              # RJE
+
+  # Stage geography map (source trust name -> org code)
+  # Used for read_in_staging.R where source data has trust names without codes.
+  # The accessor function then resolves codes to display names via org_lookup.
+  stage_geography_map:
+    "Birmingham Women's and Children's NHS Foundation Trust": RQ3
+    "George Eliot Hospital NHS Trust": RLT
+    "Sandwell and West Birmingham Hospitals NHS Trust": RXK
+    "South Warwickshire University NHS Foundation Trust": RJC
+    "The Dudley Group NHS Foundation Trust": RNA
+    "The Robert Jones and Agnes Hunt Orthopaedic Hospital NHS Foundation Trust": RL1
+    "The Royal Orthopaedic Hospital NHS Foundation Trust": RRJ
+    "The Royal Wolverhampton NHS Trust": RL4
+    "The Shrewsbury and Telford Hospital NHS Trust": RXW
+    "University Hospitals Birmingham NHS Foundation Trust": RRK
+    "University Hospitals Coventry and Warwickshire NHS Trust": RKB
+    "University Hospitals Of North Midlands NHS Trust": RJE
+    "Walsall Healthcare NHS Trust": RBK
+    "Worcestershire Acute Hospitals NHS Trust": RWP
+    "Wye Valley NHS Trust": RLQ
+
+  # LWBC geography map (source trust name -> org code)
+  # Used for read_in_lwbc.R where source data has short trust names without codes.
+  # The accessor function resolves codes to display names via org_lookup.
+  lwbc_geography_map:
+    "Birmingham Women's and Children's": RQ3
+    "Dudley Group": RNA
+    "George Eliot": RLT
+    "Robert Jones and Agnes Hunt Orthopaedic": RL1
+    "Royal Orthopaedic": RRJ
+    "Royal Wolverhampton": RL4
+    "Sandwell and West Birmingham": RXK
+    "Shrewsbury and Telford": RXW
+    "South Warwickshire University": RJC
+    "University Birmingham": RRK
+    "University Coventry and Warwickshire": RKB
+    "University of North Midlands": RJE
+    "Walsall": RBK
+    "Worcestershire": RWP
+    "Wye Valley": RLQ
+
+  # Treatment Variation geography map (source trust name -> org code)
+  # Used for read_in_tv.R where source data has trust names without codes.
+  # Note: typos are from the source data and must match exactly.
+  # The accessor function resolves codes to display names via org_lookup.
+  tv_geography_map:
+    "Walsall Healthcare NHS Trust": RBK
+    "The Royal Wolverhampton NHS Trust": RL4
+    "Sandwell and West Birmingham Hospitals NHS Trust": RXK
+    "The Dudley Group NHS Foundation Trust": RNA
+    "The Shrewsbury and Telford Hospital NHS Trust": RXW
+    "University Hospitals of North Midlands NHS Trust": RJE
+    "South Warwickshire University NHS Foundation Trust": RJC
+    "University Hospitals Coventry and Warwickshire NHS Trust": RKB
+    "George Eliot Hospital NHS Trust": RLT
+    "University Hospitals Birmingham NHS Foundation Trust": RRK
+    "Worcestershire Acute Hospitals NHS Trust": RWP
+    "Wye Valley NHS Trust": RLQ
+
+  # sub-ICB recode map (sub-ICB code -> ICB)
+  icb_recode_map:
+    "15E": "Birmingham and Solihull"
+    "D2P2L": "Black Country"
+    "B2M3M": "Coventry and Warwickshire"
+    "18C": "Hereford and Worcestershire"
+    "M2L0M": "Shropshire, Telford and Wrekin"
+    "04Y": "Staffordshire and Stoke on Trent"
+    "05D": "Staffordshire and Stoke on Trent"
+    "05G": "Staffordshire and Stoke on Trent"
+    "05Q": "Staffordshire and Stoke on Trent"
+    "05V": "Staffordshire and Stoke on Trent"
+    "05W": "Staffordshire and Stoke on Trent"
+
+  # Trust code to ICB mapping (for Treatment Variation data)
+  # The accessor function resolves codes to display names via org_lookup.
+  trust_to_icb:
+    RBK: "Black Country ICB"
+    RL4: "Black Country ICB"
+    RXK: "Black Country ICB"
+    RNA: "Black Country ICB"
+    RXW: "Shropshire, Telford and Wrekin ICB"
+    RJE: "Staffordshire and Stoke ICB"
+    RJC: "Coventry and Warwickshire ICB"
+    RKB: "Coventry and Warwickshire ICB"
+    RLT: "Coventry and Warwickshire ICB"
+    RRK: "Birmingham & Solihull ICB"
+    RWP: "Hereford and Worcestershire ICB"
+    RLQ: "Hereford and Worcestershire ICB"
+
+  # Treatment Variation configuration
+  tv_config:
+    file_path: "data/treatment-variation/WMCA Treatment Variation Dashboard.xlsx"
+    all_data_sheet: "All Data"
+    indicator_sheet: "WMCA"
+    indicator_range: "B16:E19"
+    alliance_name: "West Midlands Cancer Alliance"
+    needs_percentage_conversion: false
+
+
+# =============================================================================
+# EMCA - East Midlands Cancer Alliance
+# =============================================================================
+EMCA:
+
+  # Metadata
+  code: EMCA
+  alliance: East Midlands
+  meeting_name: ECAG
+  initial: E
+
+  # Trust codes (8 trusts)
+  trust_codes:
+    - RTG
+    - RWD
+    - RWE
+    - RNQ
+    - RNS
+    - RX1
+    - RK5
+    - RFS
+
+  # Organisation lookup (code -> display name -> abbreviation)
+  org_lookup:
+    ORG.CODE:
+      - RTG
+      - RWD
+      - RWE
+      - RNQ
+      - RNS
+      - RX1
+      - RK5
+      - RFS
+    ORG.NAME:
+      - "University Hospitals of Derby & Burton"   # RTG
+      - "United Lincolnshire Hospitals"            # RWD
+      - "University Hospitals of Leicester"        # RWE
+      - "Kettering General"                        # RNQ
+      - "Northamptonshire Healthcare"              # RNS
+      - "Nottingham University Hospitals"          # RX1
+      - "Sherwood Forest"                          # RK5
+      - "Chesterfield Royal"                       # RFS
+    ORG.ABBR:
+      - "UHDB"            # RTG
+      - "ULHT"            # RWD
+      - "UHL"             # RWE
+      - "Kettering"       # RNQ
+      - "Northampton"     # RNS
+      - "NUH"             # RX1
+      - "Sherwood"        # RK5
+      - "Chesterfield"    # RFS
+
+  # Stage geography map (source trust name -> org code)
+  # The accessor function resolves codes to display names via org_lookup.
+  stage_geography_map:
+    "Chesterfield Royal Hospital NHS Foundation Trust": RFS
+    "Sherwood Forest Hospitals NHS Foundation Trust": RK5
+    "Kettering General Hospital NHS Foundation Trust": RNQ
+    "Northampton General Hospital NHS Trust": RNS
+    "University Hospitals of Derby and Burton NHS Foundation Trust": RTG
+    "United Lincolnshire Teaching Hospitals NHS Trust": RWD
+    "University Hospitals of Leicester NHS Trust": RWE
+    "Nottingham University Hospitals NHS Trust": RX1
+
+  # LWBC geography map (source trust name -> org code)
+  # Used for read_in_lwbc.R where source data has short trust names without codes.
+  # The accessor function resolves codes to display names via org_lookup.
+  lwbc_geography_map:
+    "Chesterfield Royal": RFS
+    "Kettering General": RNQ
+    "Northampton General": RNS
+    "Nottingham University": RX1
+    "Sherwood Forest": RK5
+    "United Lincolnshire": RWD
+    "University of Derby and Burton": RTG
+    "University of Leicester": RWE
+
+  # Treatment Variation geography map (source trust name -> org code)
+  # Used for read_in_tv.R where source data has trust names without codes.
+  # Note: typos are from the source data and must match exactly.
+  # The accessor function resolves codes to display names via org_lookup.
+  tv_geography_map:
+    "Nottingham University Hospital": RX1
+    "Sherwood Forest Hospital": RK5
+    "United Lincolnshire Teaching Hospital": RWD
+    "University Hosptial of Leciester": RWE
+    "University of Derby and Burton": RTG
+    "Chesterfield Royal Hospital": RFS
+    "Northampton General Hospital": RNS
+    "Kettering General Hospital": RNQ
+
+  # ICB recode map (legacy CCG codes)
+  icb_recode_map:
+    "15M": "Derbyshire"
+    "03W": "Leicester, Leicestershire and Rutland"
+    "04C": "Leicester, Leicestershire and Rutland"
+    "04V": "Leicester, Leicestershire and Rutland"
+    "71E": "Lincolnshire"
+    "78H": "Northamptonshire"
+    "02Q": "Nottingham and Nottinghamshire"
+    "52R": "Nottingham and Nottinghamshire"
+
+  # Trust code to ICB mapping
+  # The accessor function resolves codes to display names via org_lookup.
+  trust_to_icb:
+    RX1: "Nottm & Notts ICB"
+    RK5: "Nottm & Notts ICB"
+    RWD: "Lincs ICB"
+    RWE: "LLR ICB"
+    RTG: "Derby ICB"
+    RFS: "Derby ICB"
+    RNS: "Northants ICB"
+    RNQ: "Northants ICB"
+
+  # Treatment Variation configuration
+  tv_config:
+    file_path: "data/treatment-variation/EMCA Treatment Variation Dashboard.xlsx"
+    overview_range: "5:9"
+    lung_range: "10:18"
+    lower_gi_range: "10:18"
+    breast_range: "10:18"
+    gynae_range: "12:20"
+    needs_percentage_conversion: true
+    drop_last_cols_overview: 0
+    drop_last_cols_tumour: 1
+    alliance_avg_col: "EMCA Moving Avg. (%)"
+    time_period_col: "^Latest Quarter$"
+    sheet_names:
+      lung: Lung
+      lower_gi: Bowel
+      breast: Breast
+      gynae: Ovarian

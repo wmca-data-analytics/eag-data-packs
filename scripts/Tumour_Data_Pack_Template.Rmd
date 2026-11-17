@@ -1,0 +1,1970 @@
+---
+title: "`r pres_title`"
+author: WMCA Data Analytics Team
+output:
+  powerpoint_presentation:
+    reference_doc:  !expr ref_doc
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+params:
+  tumour_key: "lung"
+---
+
+```{r setup, include=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(knitr)
+library(tidyr)
+library(flextable)
+library(NHSRplotthedots)
+library(ggpubr)
+library(forcats)
+library(zoo)
+library(scales)
+library(officer)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+set_flextable_defaults(
+  font.family = "Arial", font.size = 8.5,
+  border.color = "gray", big.mark = "")
+border <- fp_border_default()
+group_border <- fp_border(color = "gray30", width = 1.5)
+
+# Get configuration for this tumour type
+# Use a different variable name to avoid shadowing the global tumour_config list
+current_config <- get_tumour_config(params$tumour_key)
+
+# Set up convenience flags for conditional chunk execution
+has_fds_detailed <- !is.null(current_config$cwt_fds_detailed)
+has_tv <- !is.null(current_config$treatment_variation)
+has_staging_completeness <- !is.null(current_config$staging_completeness)
+has_staging_demographics <- !is.null(current_config$staging_demographics)
+uses_subtype_staging <- has_split(current_config, "staging_demographics")
+uses_subtype_staging_completeness <- has_split(current_config, "staging_completeness")
+has_public_benchmarking <- isTRUE(current_config$cwt_public_data_exists_for_benchmarking)
+
+# Benchmarking is gated per standard: the tumour must have a public
+# benchmarking bucket AND not have opted out of that standard in tumours.yml
+# (display_benchmarking_fds / _31day / _62day). FDS-only pathways such as
+# non-specific symptoms opt out of 31-day and 62-day.
+has_benchmarking_fds <- has_public_benchmarking && includes_benchmarking(current_config, "fds")
+has_benchmarking_31 <- has_public_benchmarking && includes_benchmarking(current_config, "31day")
+has_benchmarking_62 <- has_public_benchmarking && includes_benchmarking(current_config, "62day")
+
+# A split benchmarking standard (e.g. Urology's 31-day/62-day — see the null /
+# scalar / array convention in config/tumours.yml's header) comes back from
+# process_benchmarking() as a named list of tables instead of one table; a
+# plain data.frame is never itself a list of data.frames, so this check is
+# reliable without consulting the config again.
+is_split_benchmark <- function(x) is.list(x) && !is.data.frame(x)
+
+# Data-presence gates for sections that have no config flag. A tumour with no
+# rows in a source extract gets NULL from validate_df_not_empty_warn(), so the
+# absence of data is the signal — no configuration needed. FDS-only pathways
+# such as non-specific symptoms have no 62-day or LWBC data at all.
+has_62_totals <- !is.null(tumour_data$day_62$plot$total_treated)
+has_62_summary <- !is.null(tumour_data$day_62$raw$comm) ||
+  !is.null(tumour_data$day_62$summary$provider)
+uses_subtype_lwbc <- has_split(current_config, "lwbc")
+has_lwbc_table <- !is.null(tumour_data$lwbc$table)
+has_lwbc_plot <- !is.null(tumour_data$lwbc$plot)
+has_lwbc_pa_plot <- !is.null(tumour_data$lwbc$pa_plot)
+has_lwbc_trust_plot <- !is.null(tumour_data$lwbc$trust_plot)
+has_lwbc_trust_pa_plot <- !is.null(tumour_data$lwbc$trust_pa_plot)
+has_lwbc <- !is.null(current_config$lwbc)
+has_cwt_31_spc <- !is.null(tumour_data$day_31$plot)
+has_cwt_62_spc <- !is.null(tumour_data$day_62$plot)
+
+# Get treatment variation target if applicable
+if (has_tv && !is.null(current_config$treatment_variation_target_name)) {
+  tv_target <- get(current_config$treatment_variation_target_name)
+}
+
+# tumour_data is pre-loaded by main.R using read_tumour_data(tumour_key, global_data)
+
+```
+
+## Contents
+
+```{r contents, results='asis', echo=FALSE}
+cat(paste(generate_contents_items(params$tumour_key), collapse = "\n\n"))
+```
+
+# Cancer Waiting Times
+
+## FDS Summary
+
+```{r fds_summary, results='asis', echo=FALSE}
+# The rule-in/rule-out bullets are gated on has_fds_detailed: Rule-in/Rule-out
+# and the FDS Pathway End Reason breakdown only exist when a detailed-extract
+# category is set for this tumour (cwt_fds_detailed) — a tumour sourced
+# entirely from the public extract (cwt_fds_detailed: null, e.g. a tumour the
+# detailed extract has no distinct bucket for) has no Pathway End Reason
+# breakdown to show, so this content, and nothing else, is skipped for it.
+cat(paste0(
+  "- The **", tumour_data$fds$raw$provider_comm$Period,
+  "** 28-day Faster Diagnosis Standard (FDS) was **",
+  tumour_data$fds$raw$provider_comm$Compliance,
+  "%** compared to the national target of ", CWT_STANDARD_FDS_PC, "%.\n"
+))
+cat(paste0(
+  "    + This was equivalent to ",
+  sqrt((tumour_data$fds$raw$provider_comm[["Diff from std"]])^2), " patients ",
+  if_else(tumour_data$fds$raw$provider_comm[["Diff from std"]] < 0, "below", "above"),
+  " the target.\n\n"
+))
+
+above <- tumour_data$counts$fds_trusts_above
+below <- tumour_data$counts$fds_trusts_below
+cat(paste0(
+  "- In **", format(tumour_data$fds$summary$provider$PERIOD, "%B %Y"), "** ",
+  if_else(above == 1, paste0("there was ", above, " Trust"), paste0("there were ", above, " Trusts")),
+  " in the ", alliance_name, " meeting the FDS target of ", CWT_STANDARD_FDS_PC, "%, with ",
+  if_else(below == 1, paste0(below, " Trust"), paste0(below, " Trusts")),
+  " not meeting the target, based on submitted data.\n\n"
+))
+
+if (has_fds_detailed) {
+  cat(paste0(
+    "- The **", format(tumour_data$fds$rule_in_comm$summary$Date, "%B %Y"),
+    "** FDS for **Pathway End Reason - diagnosis of cancer** was **",
+    tumour_data$fds$rule_in_comm$summary$COMPLIANCE,
+    "%** compared to the national target of ", CWT_STANDARD_FDS_PC, "%.\n"
+  ))
+  cat(paste0(
+    "    + This was equivalent to ",
+    sqrt((tumour_data$fds$rule_in_comm$summary$Patients_Above_FDS_Target)^2), " patients ",
+    if_else(tumour_data$fds$rule_in_comm$summary$Patients_Above_FDS_Target < 0, "below", "above"),
+    " the target.\n\n"
+  ))
+
+  ri_above <- tumour_data$counts$fds_ri_trusts_above
+  ri_below <- tumour_data$counts$fds_ri_trusts_below
+  cat(paste0(
+    "- In **", format(tumour_data$fds$rule_in$summary$Date, "%B %Y"), "** for **Diagnosis of Cancer**, ",
+    if_else(ri_above == 1, paste0("there was ", ri_above, " Trust"), paste0("there were ", ri_above, " Trusts")),
+    " in the ", alliance_name, " meeting the FDS target of ", CWT_STANDARD_FDS_PC, "%, with ",
+    if_else(ri_below == 1, paste0(ri_below, " Trust"), paste0(ri_below, " Trusts")),
+    " not meeting the target, based on submitted data.\n\n"
+  ))
+}
+```
+
+```{r 62_day_summary, eval=has_62_summary, results='asis', echo=FALSE}
+# Gated on has_62_summary: with no 62-day data every inline value below
+# resolves to NULL, which prints as an empty string rather than erroring, so
+# an ungated version of this slide renders authoritative-looking prose full of
+# blanks and "NA". Wording is unchanged from the previous inline-markdown
+# version; only the gating and the cat() wrapper are new.
+comm <- tumour_data$day_62$raw$comm
+
+compliance_text <- if (is.null(comm)) {
+  paste('NA')
+} else if (nrow(comm) > 1) {
+  paste0(comm$Compliance[1], "% for ", comm$"Cancer Type"[1], ", and ",
+         comm$Compliance[2], "% for ", comm$"Cancer Type"[2])
+} else {
+  paste0(comm$Compliance, "% ")
+}
+
+diff_text <- if (is.null(comm)) {
+  paste('NA')
+} else if (nrow(comm) > 1) {
+  paste0(sqrt((comm$"Diff from std"[1])^2), " patients ",
+         if_else(comm$"Diff from std"[1] < 0, paste("below"), paste("above")),
+         " and ", sqrt((comm$"Diff from std"[2])^2), " patients ",
+         if_else(comm$"Diff from std"[2] < 0,
+                 paste("below the target respectively"),
+                 paste("above the target respectively")))
+} else if (nrow(comm) == 1) {
+  paste0(sqrt((comm$"Diff from std")^2), " patients ",
+         if_else(comm$"Diff from std" < 0,
+                 paste("below the target"), paste("above the target")))
+}
+
+above <- tumour_data$counts$day_62_trusts_above
+below <- tumour_data$counts$day_62_trusts_below
+
+cat("\n\n## 62-Day Summary\n\n")
+
+cat(paste0(
+  "- The **", comm$Period[1], "** 62-day referral to treatment waiting time ",
+  "standard was **", compliance_text, "** compared to the national target of ",
+  CWT_STANDARD_62DAY_PC, "%.\n"
+))
+
+cat(paste0(
+  "    + This was equivalent to ", diff_text, ".\n\n"
+))
+
+cat(paste0(
+  "- In **", format(tumour_data$day_62$summary$provider$PERIOD, "%B %Y"), "** ",
+  if_else(above == 1, paste0("there was ", above, " Trust"),
+          paste0("there were ", above, " Trusts")),
+  " in the ", alliance_name, " meeting the 62-day target of ",
+  CWT_STANDARD_62DAY_PC, "%, with ",
+  if_else(below == 1, paste0(below, " Trust"), paste0(below, " Trusts")),
+  " not meeting the target, based on submitted data.\n\n"
+))
+```
+
+## FDS - Total Patients
+
+```{r total_fds_patients, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+spc_chart <- ptd_spc(tumour_data$fds$plot$total_treated,
+        value_field = TOTAL.TREATED,
+        date_field = PERIOD,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "1 month") +
+    labs(
+    x = "Date",
+    y = "FDS Clock-stops",
+    title = ""
+  ) +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+    )
+
+spc_chart
+```
+
+## FDS - Total Patients (per Trust)
+
+```{r total_fds_patients_trust, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+spc_chart <- ptd_spc(tumour_data$fds$plot$compliance,
+        value_field = TOTAL.TREATED,
+        date_field = PERIOD,
+        facet_field = ORG.NAME,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "3 months") +
+  labs(
+    x = "Date",
+    y = "FDS Clock-stops",
+    title = NULL,
+    caption = NULL
+  ) +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+  )
+
+spc_chart
+```
+
+```{r total_62_day_patients_header, eval=has_62_totals, results='asis', echo=FALSE}
+cat("\n\n## 62-Day - Total Patients\n\n")
+```
+
+```{r total_62_day_patients, eval=has_62_totals, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+spc_chart <- ptd_spc(tumour_data$day_62$plot$total_treated,
+        value_field = TOTAL.TREATED,
+        date_field = PERIOD,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "1 month") +
+    labs(
+    x = "Date",
+    y = "Patients Treated",
+    title = NULL,
+    caption = NULL
+  ) +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+    )
+
+spc_chart
+```
+
+```{r total_62_day_patients_trust_header, eval=has_cwt_62_spc, results='asis', echo=FALSE}
+cat("\n\n## 62-Day - Total Patients (per Trust)\n\n")
+```
+
+```{r total_62_day_patients_trust, eval=has_cwt_62_spc, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+
+spc_chart <- ptd_spc(tumour_data$day_62$plot$compliance,
+        value_field = TOTAL.TREATED,
+        date_field = PERIOD,
+        facet_field = ORG.NAME,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "3 months") +
+    labs(
+    x = "Date",
+    y = "Patients Treated",
+    title = NULL,
+    caption = NULL
+  ) +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+    )
+
+spc_chart
+```
+
+## CWT Compliance - `r as.yearmon(latest_month, "%Y %m")`
+
+```{r cwt_standards_table, echo=FALSE, message=FALSE, warning=FALSE}
+
+# The column layout varies by tumour. create_standards_table() joins only the
+# standards a tumour actually has, so the usual 7 columns (ORG.NAME plus a
+# compliance/patients pair per standard) drop to 3 for an FDS-only pathway such
+# as non-specific symptoms. Select columns by name rather than by position:
+# hardcoded j = c(3,5,7) would either land on the wrong columns or index past
+# the end, and naming an absent column in highlight() is an error.
+tbl_names <- names(tumour_data$standards_table)
+compliance_cols <- grep("Compliance \\(%\\)$", tbl_names, value = TRUE)
+patients_cols <- grep("^No\\. patients above", tbl_names, value = TRUE)
+
+standards_tbl <- flextable(tumour_data$standards_table) %>%
+  bold(part = "header") %>%
+  width(j = 1, width = 4)
+
+if (length(patients_cols) > 0) {
+  standards_tbl <- width(standards_tbl, j = patients_cols, width = 1.4)
+}
+if (length(compliance_cols) > 0) {
+  standards_tbl <- width(standards_tbl, j = compliance_cols, width = 1)
+}
+
+standards_tbl <- add_footer_lines(standards_tbl, SLIDE_FOOTER_CWT_TABLE)
+
+group_rows <- get_provider_group_boundaries(tumour_data$standards_table, tumour_data$config, code_col = "ORG.NAME")
+for (r in group_rows) {
+  standards_tbl <- hline(standards_tbl, i = r, border = group_border)
+}
+
+# Highlight below-target compliance cells, for whichever standards are present.
+# The formula is built as a string because the column name varies; the
+# threshold is interpolated as a literal so it does not depend on the
+# evaluation environment flextable uses for the formula.
+highlight_specs <- list(
+  list(col = "Latest FDS Compliance (%)", threshold = CWT_STANDARD_FDS_PC),
+  list(col = "Latest 31-Day Compliance (%)", threshold = CWT_STANDARD_31DAY_PC),
+  list(col = "Latest 62-Day Compliance (%)", threshold = CWT_STANDARD_62DAY_PC)
+)
+
+for (spec in highlight_specs) {
+  if (!spec$col %in% tbl_names) next
+
+  standards_tbl <- flextable::highlight(
+    standards_tbl,
+    i = as.formula(paste0("~ `", spec$col, "` < ", spec$threshold)),
+    j = spec$col,
+    color = "yellow"
+  )
+}
+
+standards_tbl
+```
+
+```{r cwt_28_day_benchmarking_table, eval=has_benchmarking_fds, results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+
+# Builds the finished flextable for one FDS benchmarking table (`dat` is one
+# raw table from process_benchmark_standard()). Factored out so a split
+# standard (see is_split_benchmark() in the setup chunk) can call it once per
+# group instead of duplicating this block.
+build_fds_benchmarking_table <- function(dat) {
+  national_provider_count <- attr(dat, "national_provider_count")
+
+  table_data <- dat %>%
+    select(-ORG.CODE) %>%
+    rename(Provider = ORG.NAME) %>%
+    mutate(Provider = case_when(
+      Provider == "National Average" ~ "[National Average]",
+      Provider == "Alliance Average" ~ sprintf("[%s]", alliance),
+      TRUE ~ Provider
+    )) %>%
+    mutate(`Latest FDS Compliance` = paste0(round(`Latest FDS Compliance (%)`, 1), " %")) %>%
+    relocate(`Latest FDS Compliance`, .before = `Latest FDS Compliance (%)`) %>%
+    mutate(`Difference from the target (no. patients)` = if_else(
+      Provider == "[National Average]",
+      "",
+      get_pt_diff_friendly(`Difference from the target (no. patients)`)
+    )) %>%
+    rename(!!sprintf("National FDS Ranking\n(of %d)", national_provider_count) := `National FDS Ranking`)
+
+  ft <- flextable(table_data) |>
+    bold(part = "header") |>
+    width(j = 1, width = 4) |>
+    width(j = c(2,3,4,5), width = 1.4) |>
+    align(j = setdiff(names(table_data), "Provider"), align = "right", part = "body") |>
+    align(j = setdiff(names(table_data), "Provider"), align = "center", part = "header") |>
+    align(j = grep("National Ranking|Ranking difference from previous month", names(table_data), value = TRUE), align = "center", part = "body")
+
+  group_rows <- get_provider_group_boundaries(table_data, tumour_data$config, code_col = "Provider", offset = 2)
+  for (r in group_rows) {
+    ft <- hline(ft, i = r, border = group_border)
+  }
+
+  ft <- flextable::highlight(ft, i = ~ `Latest FDS Compliance (%)` < CWT_STANDARD_FDS_PC, j = "Latest FDS Compliance", color = "yellow")
+  ft <- delete_columns(ft, j = "Latest FDS Compliance (%)") |>
+    add_footer_lines(SLIDE_FOOTER_CWT_BENCHMARKING_TABLE)
+  ft
+}
+
+# A split standard gets one "##" heading (= one slide) per group, matching
+# the split staging/LWBC sections; "###" would stack every group's table on
+# one slide.
+if (is_split_benchmark(tumour_data$benchmarking$day_28)) {
+  for (grp in names(tumour_data$benchmarking$day_28)) {
+    cat("\n\n## FDS - Benchmarking -", grp, "\n\n")
+    flextable::flextable_to_rmd(build_fds_benchmarking_table(tumour_data$benchmarking$day_28[[grp]]))
+  }
+} else {
+  cat("\n\n## FDS - Benchmarking\n\n")
+  flextable::flextable_to_rmd(build_fds_benchmarking_table(tumour_data$benchmarking$day_28))
+}
+```
+
+## FDS - Compliance (per Trust)
+
+```{r fds_spc, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+spc_chart <- ptd_spc(tumour_data$fds$plot$compliance,
+        value_field = `COMPLIANCE (%)`,
+        date_field = PERIOD,
+        facet_field = ORG.NAME,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "3 months") +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+    ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "FDS Compliance (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_CWT_CHART
+    )
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=CWT_STANDARD_FDS_PC, linetype="dashed", color = "red", size=1)
+
+spc_chart_with_hline
+```
+
+```{r fds_pathway_end_reason_header, eval=has_fds_detailed, results='asis', echo=FALSE}
+cat("\n\n## FDS - Pathway End Reason Compliance\n\n")
+```
+
+```{r fds_pathway_end_reason_table, eval=has_fds_detailed, echo=FALSE, message=FALSE, warning=FALSE}
+
+table_data <- tumour_data$benchmarking$fds_end_reason %>%
+  mutate(`Diagnosis – Compliance` = paste0(round(`Diagnosis – Compliance_%`, 1), " %"),
+         `Ruling out – Compliance` = paste0(round(`Ruling out – Compliance_%`, 1), " %")) %>%
+  relocate(`Diagnosis – Compliance`, .before = `Diagnosis – Compliance_%`) |>
+  relocate(`Ruling out – Compliance`, .before = `Ruling out – Compliance_%`)
+
+fds_pathway_end_reason_table <- flextable(table_data) |>
+  bold(part = "header") |>
+  width(j = 1, width = 4) |>
+  width(j = c(2,4), width = 1.6) |>
+  width(j = c(3,5), width = 1.4)
+
+group_rows <- get_provider_group_boundaries(table_data, tumour_data$config, code_col = "Provider")
+for (r in group_rows) {
+  fds_pathway_end_reason_table <- hline(fds_pathway_end_reason_table, i = r, border = group_border)
+}
+
+fds_pathway_end_reason_table <- flextable::highlight(fds_pathway_end_reason_table, i = ~ `Diagnosis – Compliance_%` < CWT_STANDARD_FDS_PC, j = "Diagnosis – Compliance", color = "yellow")
+
+fds_pathway_end_reason_table <- flextable::highlight(fds_pathway_end_reason_table, i = ~ `Ruling out – Compliance_%` < CWT_STANDARD_FDS_PC, j = "Ruling out – Compliance", color = "yellow")
+
+fds_pathway_end_reason_table <-
+  delete_columns(fds_pathway_end_reason_table, j = "Diagnosis – Compliance_%")
+fds_pathway_end_reason_table <-
+  delete_columns(fds_pathway_end_reason_table, j = "Ruling out – Compliance_%")
+fds_pathway_end_reason_table <-
+  add_footer_lines(fds_pathway_end_reason_table, SLIDE_FOOTER_FDS_END_REASON)
+
+fds_pathway_end_reason_table
+```
+
+```{r fds_riro_bar_header, eval=has_fds_detailed, results='asis', echo=FALSE}
+cat("\n\n## FDS - Pathway End Reason Compliance\n\n")
+```
+
+```{r fds_ri_bar_plot, eval=has_fds_detailed, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(tumour_data$fds$plot$riro_bar, aes(x=ORG.NAME, y=`COMPLIANCE (%)`, fill = Pathway.End.Reason)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(breaks=seq(0,100,20)) +
+  geom_hline(yintercept=CWT_STANDARD_FDS_PC, linetype="dashed", color = "red", size=1.8) +
+  geom_text(aes(label = paste0(`COMPLIANCE (%)`,"%"), y = `COMPLIANCE (%)` + 2), position = position_dodge(0.9),vjust = 0) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 10)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  scale_x_discrete(labels = wrap_format(10)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Trust",
+    y = "FDS Compliance (%)",
+    title = NULL,
+    caption = paste0("Note: percentages are independent for each pathway end reason; they should not be added together or total 100%. ", SLIDE_FOOTER_CWT_CHART)
+    )
+```
+
+```{r fds_riro_line_header, eval=has_fds_detailed, results='asis', echo=FALSE}
+cat("\n\n## FDS - Pathway End Reason Compliance (per Trust)\n\n")
+```
+
+```{r fds_ri_line_plot, eval=has_fds_detailed, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg',echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(tumour_data$fds$plot$riro, aes(x=Date, y=`COMPLIANCE (%)`)) +
+  geom_line(aes(colour = Pathway.End.Reason), size=1.5) +
+  geom_point(aes(colour = Pathway.End.Reason), size=4) +
+  scale_y_continuous(breaks=seq(0,100,20)) +
+  geom_hline(yintercept=CWT_STANDARD_FDS_PC, linetype="dashed", color = "red", size=1.8) +
+  scale_x_date(date_breaks = "3 months", date_labels =  "%b %Y") +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  facet_wrap(~ORG.NAME, axes = "all_y") +
+  theme(strip.text = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "FDS Compliance (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_CWT_CHART
+    )
+```
+
+```{r cwt_31_day_benchmarking_table, eval=has_benchmarking_31, results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+
+# See build_fds_benchmarking_table() above for why this is factored out.
+build_31day_benchmarking_table <- function(dat) {
+  national_provider_count <- attr(dat, "national_provider_count")
+
+  table_data <- dat %>%
+    select(-ORG.CODE) %>%
+    rename(Provider = ORG.NAME) %>%
+    mutate(Provider = case_when(
+      Provider == "National Average" ~ "[National Average]",
+      Provider == "Alliance Average" ~ sprintf("[%s]", alliance),
+      TRUE ~ Provider
+    )) %>%
+    mutate(`Latest 31 Day Compliance` = paste0(round(`Latest FDS Compliance (%)`, 1), " %")) %>%
+    relocate(`Latest 31 Day Compliance`, .before = `Latest FDS Compliance (%)`) %>%
+    rename(!!sprintf("Latest 31 Day National Ranking\n(of %d)", national_provider_count) := `National FDS Ranking`) %>%
+    mutate(`Difference from the target (no. patients)` = if_else(
+      Provider == "[National Average]",
+      "",
+      get_pt_diff_friendly(`Difference from the target (no. patients)`)
+    ))
+
+  ft <- flextable(table_data) |>
+    bold(part = "header") |>
+    width(j = 1, width = 4) |>
+    width(j = c(2,3,4,5), width = 1.4) |>
+    align(j = setdiff(names(table_data), "Provider"), align = "right", part = "body") |>
+    align(j = setdiff(names(table_data), "Provider"), align = "center", part = "header") |>
+    align(j = grep("National Ranking|Ranking difference from previous month", names(table_data), value = TRUE), align = "center", part = "body")
+
+  group_rows <- get_provider_group_boundaries(table_data, tumour_data$config, code_col = "Provider", offset = 2)
+  for (r in group_rows) {
+    ft <- hline(ft, i = r, border = group_border)
+  }
+
+  ft <- flextable::highlight(ft, i = ~ `Latest FDS Compliance (%)` < CWT_STANDARD_31DAY_PC, j = "Latest 31 Day Compliance", color = "yellow")
+  ft <- delete_columns(ft, j = "Latest FDS Compliance (%)") |>
+    add_footer_lines(SLIDE_FOOTER_CWT_BENCHMARKING_TABLE)
+  ft
+}
+
+# A split standard gets one "##" heading (= one slide) per group, matching
+# the split staging/LWBC sections; "###" would stack every group's table on
+# one slide.
+if (is_split_benchmark(tumour_data$benchmarking$day_31)) {
+  for (grp in names(tumour_data$benchmarking$day_31)) {
+    cat("\n\n## 31-Day - Benchmarking -", grp, "\n\n")
+    flextable::flextable_to_rmd(build_31day_benchmarking_table(tumour_data$benchmarking$day_31[[grp]]))
+  }
+} else {
+  cat("\n\n## 31-Day - Benchmarking\n\n")
+  flextable::flextable_to_rmd(build_31day_benchmarking_table(tumour_data$benchmarking$day_31))
+}
+```
+
+```{r 31_day_spc_header, eval=has_cwt_31_spc, results='asis', echo=FALSE}
+cat("\n\n## 31-Day - Compliance (per Trust)\n\n")
+```
+
+```{r 31_Day_SPC, eval=has_cwt_31_spc, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+
+spc_chart <- ptd_spc(tumour_data$day_31$plot$plot,
+        value_field = `COMPLIANCE (%)`,
+        date_field = PERIOD,
+        facet_field = ORG.NAME,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "3 months") +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+    ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "31-Day Compliance (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_CWT_CHART
+    )
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=CWT_STANDARD_31DAY_PC, linetype="dashed", color = "red", size=1)
+
+spc_chart_with_hline
+```
+
+```{r cwt_62_day_benchmarking_table, eval=has_benchmarking_62, results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+
+# See build_fds_benchmarking_table() above for why this is factored out.
+build_62day_benchmarking_table <- function(dat) {
+  national_provider_count <- attr(dat, "national_provider_count")
+
+  table_data <- dat %>%
+    select(-ORG.CODE) %>%
+    rename(Provider = ORG.NAME) %>%
+    mutate(Provider = case_when(
+      Provider == "National Average" ~ "[National Average]",
+      Provider == "Alliance Average" ~ sprintf("[%s]", alliance),
+      TRUE ~ Provider
+    )) %>%
+    mutate(`Latest 62 Day Compliance` = paste0(round(`Latest FDS Compliance (%)`, 1), " %")) %>%
+    relocate(`Latest 62 Day Compliance`, .before = `Latest FDS Compliance (%)`) %>%
+    rename(!!sprintf("Latest 62 Day National Ranking\n(of %d)", national_provider_count) := `National FDS Ranking`) %>%
+    mutate(`Difference from the target (no. patients)` = if_else(
+      Provider == "[National Average]",
+      "",
+      get_pt_diff_friendly(`Difference from the target (no. patients)`)
+    ))
+
+  ft <- flextable(table_data) |>
+    bold(part = "header") |>
+    width(j = 1, width = 4) |>
+    width(j = c(2,3,4,5), width = 1.4) |>
+    align(j = setdiff(names(table_data), "Provider"), align = "right", part = "body") |>
+    align(j = setdiff(names(table_data), "Provider"), align = "center", part = "header") |>
+    align(j = grep("National Ranking|Ranking difference from previous month", names(table_data), value = TRUE), align = "center", part = "body")
+
+  group_rows <- get_provider_group_boundaries(table_data, tumour_data$config, code_col = "Provider", offset = 2)
+  for (r in group_rows) {
+    ft <- hline(ft, i = r, border = group_border)
+  }
+
+  ft <- flextable::highlight(ft, i = ~ `Latest FDS Compliance (%)` < CWT_STANDARD_62DAY_PC, j = "Latest 62 Day Compliance", color = "yellow")
+  ft <- delete_columns(ft, j = "Latest FDS Compliance (%)") |>
+    add_footer_lines(SLIDE_FOOTER_CWT_BENCHMARKING_TABLE)
+  ft
+}
+
+# A split standard gets one "##" heading (= one slide) per group, matching
+# the split staging/LWBC sections; "###" would stack every group's table on
+# one slide.
+if (is_split_benchmark(tumour_data$benchmarking$day_62)) {
+  for (grp in names(tumour_data$benchmarking$day_62)) {
+    cat("\n\n## 62-Day - Benchmarking -", grp, "\n\n")
+    flextable::flextable_to_rmd(build_62day_benchmarking_table(tumour_data$benchmarking$day_62[[grp]]))
+  }
+} else {
+  cat("\n\n## 62-Day - Benchmarking\n\n")
+  flextable::flextable_to_rmd(build_62day_benchmarking_table(tumour_data$benchmarking$day_62))
+}
+```
+
+```{r 62_day_spc_header, eval=has_cwt_62_spc, results='asis', echo=FALSE}
+cat("\n\n## 62-Day - Compliance (per Trust)\n\n")
+```
+
+```{r 62_Day_SPC, eval=has_cwt_62_spc, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+
+spc_chart <- ptd_spc(tumour_data$day_62$plot$compliance,
+        value_field = `COMPLIANCE (%)`,
+        date_field = PERIOD,
+        facet_field = ORG.NAME,
+        improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "3 months") +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)
+    ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "62-Day Compliance (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_CWT_CHART
+    )
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=CWT_STANDARD_62DAY_PC, linetype="dashed", color = "red", size=1)
+
+spc_chart_with_hline
+```
+
+```{r treatment_variation_header, eval=has_tv, results='asis', echo=FALSE}
+cat("\n\n# Treatment Variation\n\n")
+```
+
+```{r treatment_variation_overview_header, eval=has_tv, results='asis', echo=FALSE}
+cat(paste0("\n\n## Treatment Variation - Summary ", tumour_data$treatment_variation$overview$header, "\n\n"))
+```
+
+```{r Treatment_Variation_overview, eval=has_tv, fig.width=20, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+
+tbl <- tumour_data$treatment_variation$overview$table
+
+tbl_display <- tbl |>
+  mutate(
+    ICB = if_else(duplicated(ICB), "", as.character(ICB))
+  ) |>
+  select(-icb_group)
+
+
+tv_overview_tbl <- tbl_display |>
+  flextable() |>
+   colformat_double(j = "Case volume", na_str = "-") |>
+  bold(part = "header") |>
+  add_header_lines(values = tumour_data$treatment_variation$overview$note) |>
+  fontsize(size = 10, part = "all") |>
+  padding(part = "all",
+          padding.top = 1, padding.bottom = 1,
+          padding.left = 2, padding.right = 2) |>
+          padding(j = "Moving average (%)", padding.left = 12, part = "all") |>
+          padding(j = "Case volume",        padding.left = 12, part = "all") |>
+  set_table_properties(layout = "autofit", width = 1) |>
+  autofit()
+
+tv_overview_tbl <- flextable::highlight(tv_overview_tbl, i = ~ `Moving average (%)` < tv_target, j = "Moving average (%)", color = "yellow") |>
+   add_footer_lines(paste0(
+    SLIDE_FOOTER_TV_TABLE,
+    "\n",
+    '"-" Represents small number suppression by NATCAN.' )) |>
+  flextable::fontsize(part = "footer", size = 10) |>
+  flextable::padding(part = "footer", padding.top = 0, padding.bottom = 0)
+
+tv_overview_tbl
+```
+
+```{r treatment_variation_tumour_header, eval=has_tv, results='asis', echo=FALSE}
+cat("\n\n## Treatment Variation - Time Series\n\n")
+```
+
+```{r Treatment_Variation_tumour, eval=has_tv, fig.width=20, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+
+tbl <- tumour_data$treatment_variation$tumour$tumour_numeric_table
+
+avg_cols   <- grep("Moving avg \\(%\\)$", names(tbl))
+cases_cols <- grep("Case volume$", names(tbl))
+cases_cols_between <- cases_cols[cases_cols < ncol(tbl)]
+
+ft <- flextable(tbl) |>
+  colformat_double( j = cases_cols, na_str = "-" ) |>
+  separate_header(split = "_") |>
+  bold(part = "header") |>
+  add_header_lines(values = paste("Indicator:", tumour_data$treatment_variation$tumour$indicator_text)) |>
+  fontsize(size = 9, part = "all") |>
+  padding(
+    part = "all",
+    padding.top = 1, padding.bottom = 1,
+    padding.left = 2, padding.right = 2
+  ) |>
+  padding(j = avg_cols,   padding.right = 0, part = "all") |>
+  padding(j = cases_cols, padding.left  = 0, part = "all") |>
+  vline(j = "Trust", border = fp_border(color = "grey70", width = 0.5), part = "all") |>
+  vline(j = avg_cols, border = fp_border(color = "grey70", width = 0.5), part = "all") |>
+  vline(j = cases_cols_between, border = fp_border(color = "grey70", width = 1), part = "all") |>
+  hline(i = 2, j = 1:ncol(tbl), border = fp_border(color = "grey70", width = 1.5), part = "header") |>
+  align(align = "center", part = "all") |>
+  width(j = "Trust", width = 1.5) |>
+  width(j = avg_cols, width = 0.55) |>
+  width(j = cases_cols, width = 0.55) |>
+  add_footer_lines('"-" Represents small number suppression by NATCAN.')
+
+ft
+
+```
+
+```{r treatment_variation_trust_header, eval=has_tv, results='asis', echo=FALSE}
+cat("\n\n## Treatment Variation - Time Series\n\n")
+```
+
+```{r Treatment_Variation_trust_line_chart, eval=has_tv, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+
+tumour_chart_data <- tumour_data$treatment_variation$tumour$data
+
+tumour_chart <- ggplot(tumour_chart_data, aes(x = Period, y = `Moving avg (%)`, group = Trust)) +
+  geom_hline(yintercept = tv_target, linetype = "dashed", color = "red", size = 1) +
+  geom_line(color = "#2a5599", size = 1) +
+  geom_point(color = "#2a5599", size = 2) +
+  geom_text(aes(label = `Case volume`), vjust = 1.5, size = 4, color = "grey50" ) +
+  facet_wrap(~ Trust, ncol = 3, scales = "fixed", axes = "all_y") +
+  theme_minimal(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.caption = element_text(size = 12),
+    panel.spacing = unit(1, "lines")
+  ) +
+  coord_cartesian(ylim = c(0, calc_axis_limit(max(tumour_data$treatment_variation$tumour$data$`Moving avg (%)`))) , clip = "off" ) +
+  labs(
+    x = "Date",
+    y = "Moving avg (%)",
+    caption = paste0(substr(tumour_data$treatment_variation$tumour$indicator_text,3,nchar(tumour_data$treatment_variation$tumour$indicator_text)), ". ",SLIDE_FOOTER_TV_CHART,
+    "\n",  "Point labels indicate quarterly case volume; blank points represent small number suppression by NATCAN.")) +
+theme( plot.caption = element_text( size = 12, lineheight = 0.9 ))
+
+tumour_chart
+```
+
+```{r staging_completeness_header, eval=has_staging_completeness && !uses_subtype_staging_completeness, results='asis', echo=FALSE}
+cat("\n\n# Staging Completeness\n\n")
+
+ latest_q <- max(tumour_data$staging$completeness$figure$DIAGNOSIS_QUARTER, na.rm = TRUE)
+quarter_label <- format(as.yearqtr(latest_q), "Q%q %Y")
+cat("\n\n## Staging Completeness - ", quarter_label, "\n\n")
+```
+
+```{r stage_completeness, eval=has_staging_completeness && !uses_subtype_staging_completeness, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg',echo=FALSE, message=FALSE, warning=FALSE}
+
+tumour_data$staging$completeness$figure %>%
+  mutate(ORG.NAME = fct_reorder(ORG.NAME, `Stage Completeness %`),
+         Patients_Above_Target = round(Patients_Above_Target)) %>%
+  ggplot( aes(x = `Stage Completeness %`, y = ORG.NAME)) +
+  geom_bar(
+    stat = "identity",
+    aes(fill = cut(`Stage Completeness %`,
+                    breaks = c(-Inf, 60, 80, Inf),
+                    labels = c("Below 60%", "60% to 80%", "80% or Above"),
+                    right = FALSE,
+                    ordered_result = TRUE))
+  ) +
+  geom_vline(xintercept = STAGING_COMPLETENESS_TARGET_PC, linetype = "dashed", color = "red", size = 1.8) +
+  geom_vline(xintercept = 60, linetype = "dashed", color = "orange", size = 1.8) +
+  geom_text(aes(label = Patients_Above_Target),
+            hjust = -1,
+            size = 3,
+            color = "black") +
+  scale_fill_manual(
+    name = "Staging Completeness Level",
+    values = c("Below 60%" = "red",
+               "60% to 80%" = "grey",
+               "80% or Above" = "blue"),
+    drop = FALSE
+  ) +
+  theme(
+    plot.caption = element_text(size = 12),
+    axis.title = element_text(size = 16)
+    ) +
+  xlim(0,100) +
+  labs(
+    x = "Staging Completeness (%)",
+    y = "Trust",
+    title = NULL,
+    caption = paste0(SLIDE_FOOTER_STAGING_COMP_CHART, " Numbers indicate patients above the target."))
+
+```
+
+```{r stage_completeness_trust_header, eval=has_staging_completeness && !uses_subtype_staging_completeness, results='asis', echo=FALSE}
+cat("\n\n## Staging Completeness (per Trust)\n\n")
+```
+
+```{r Stage_Completeness_Trusts, eval=has_staging_completeness && !uses_subtype_staging_completeness, fig.width=20, dev='svglite', fig.ext='svg', fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+spc_chart <- ptd_spc(tumour_data$staging$completeness$plot,
+                      value_field = `Stage Completeness %`,
+                       date_field = DIAGNOSIS_QUARTER,
+                       facet_field = ORG.NAME,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=STAGING_COMPLETENESS_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(
+    plot.caption = element_text(size = 14),
+    axis.title = element_text(size = 16)) +
+  coord_cartesian(ylim = c(0, calc_axis_limit(max(tumour_data$staging$completeness$plot$`Stage Completeness %`)))) +
+  labs(
+    x = "Date",
+    y = "Staging Completeness (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_COMP_CHART
+    )
+  
+rm(spc_chart)
+
+spc_chart_with_hline
+```
+
+```{r stage_completeness_subtype_header, eval=has_staging_completeness && uses_subtype_staging_completeness, results='asis', echo=FALSE}
+cat("\n\n# Staging Completeness\n\n")
+```
+
+```{r stage_completeness_subtype_bar, eval=has_staging_completeness && uses_subtype_staging_completeness, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+for (grp in names(tumour_data$staging$completeness_subtypes)) {
+  sc <- tumour_data$staging$completeness_subtypes[[grp]]
+  quarter_label <- format(sc$current_quarter, "Q%q %Y")
+
+  cat("\n\n## Staging Completeness - ", grp, " (", quarter_label, ")\n\n", sep = "")
+
+  p <- sc$figure %>%
+    mutate(ORG.NAME = fct_reorder(ORG.NAME, `Stage Completeness %`),
+           Patients_Above_Target = round(Patients_Above_Target)) %>%
+    ggplot(aes(x = `Stage Completeness %`, y = ORG.NAME)) +
+    geom_bar(
+      stat = "identity",
+      aes(fill = cut(`Stage Completeness %`,
+                      breaks = c(-Inf, 60, 80, Inf),
+                      labels = c("Below 60%", "60% to 80%", "80% or Above"),
+                      right = FALSE,
+                      ordered_result = TRUE))
+    ) +
+    geom_vline(xintercept = STAGING_COMPLETENESS_TARGET_PC, linetype = "dashed", color = "red", size = 1.8) +
+    geom_vline(xintercept = 60, linetype = "dashed", color = "orange", size = 1.8) +
+    geom_text(aes(label = Patients_Above_Target),
+              hjust = -1,
+              size = 3,
+              color = "black") +
+    scale_fill_manual(
+      name = "Staging Completeness Level",
+      values = c("Below 60%" = "red",
+                 "60% to 80%" = "grey",
+                 "80% or Above" = "blue"),
+      drop = FALSE
+    ) +
+    theme(
+      plot.caption = element_text(size = 12),
+      axis.title = element_text(size = 16)
+    ) +
+    xlim(0,100) +
+    labs(
+      x = "Staging Completeness (%)",
+      y = "Trust",
+      title = NULL,
+      caption = paste0(SLIDE_FOOTER_STAGING_COMP_CHART, " Numbers indicate patients above the target."))
+
+  print(p)
+  cat("\n\n")
+}
+```
+
+```{r stage_completeness_subtype_spc, eval=has_staging_completeness && uses_subtype_staging_completeness, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+for (grp in names(tumour_data$staging$completeness_subtypes)) {
+  sc <- tumour_data$staging$completeness_subtypes[[grp]]
+
+  cat("\n\n## Staging Completeness -", grp, "(per Trust)\n\n")
+
+  spc_chart <- ptd_spc(sc$plot,
+                        value_field = `Stage Completeness %`,
+                        date_field = DIAGNOSIS_QUARTER,
+                        facet_field = ORG.NAME,
+                        improvement_direction = "increase") %>%
+              plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept = STAGING_COMPLETENESS_TARGET_PC, linetype = "dashed", color = "red", size = 1) +
+    theme(
+      plot.caption = element_text(size = 14),
+      axis.title = element_text(size = 16)) +
+  coord_cartesian(ylim = c(0, calc_axis_limit(max(sc$plot$`Stage Completeness %`)))) +
+    labs(
+      x = "Date",
+      y = "Staging Completeness (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_COMP_CHART
+    )
+
+  print(spc_chart_with_hline)
+  cat("\n\n")
+}
+```
+
+```{r early_diagnosis_header, eval=has_staging_demographics, results='asis', echo=FALSE}
+cat("\n\n# Early Staging\n\n")
+```
+
+```{r Stage_data_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$overall,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_Trusts_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging (per Trust)\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$trust,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     facet_field = ORG.NAME,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 10),
+        axis.text.x = element_text(size = 8, angle = 50, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_Gender_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging - Gender\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$gender,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     facet_field = Demographic,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(strip.text = element_text(size = 14)) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_Age_group_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging - Age-Group\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$age,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     facet_field = Demographic,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(strip.text = element_text(size = 14)) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_Ethnicity_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', cho=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging - Ethnicity\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$ethnicity,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     facet_field = Demographic,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(strip.text = element_text(size = 14)) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_Deprivation_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging - Deprivation\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$deprivation,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     facet_field = Demographic,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(strip.text = element_text(size = 14)) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_Route_standard, eval=has_staging_demographics && !uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+cat("\n\n## Early Staging - Route to Diagnosis\n\n")
+
+spc_chart <- ptd_spc(tumour_data$staging$early_diagnosis$route,
+                     value_field = `Statistic (12m)`,
+                     date_field = Date,
+                     facet_field = Demographic,
+                     improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+spc_chart_with_hline <- spc_chart +
+  geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+  theme(strip.text = element_text(size = 14)) +
+  theme(axis.title = element_text(size = 16)) +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+  theme(legend.text=element_text(size=12),
+        plot.caption = element_text(size = 14)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    x = "Date",
+    y = "Early Stage Diagnoses (%)",
+    title = NULL,
+    caption = SLIDE_FOOTER_STAGING_CHART
+    )
+
+print(spc_chart_with_hline)
+```
+
+```{r Stage_data_subtype_overall, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$overall)) {
+  stage_plot_df <- tumour_data$sub_types$overall[[grp]]
+
+  cat( "## Early Staging - ", grp, "\n\n", sep = "")
+
+  spc_chart <- ptd_spc(stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r Stage_data_subtype_trust, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$trust)) {
+  trust_stage_plot_df <- tumour_data$sub_types$trust[[grp]]
+
+  cat( "\n\n## Early Staging - ", grp, " (per Trust)\n\n", sep = "")
+
+  spc_chart <- ptd_spc(trust_stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       facet_field = ORG.NAME,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 10),
+          axis.text.x = element_text(size = 8, angle = 50, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r Stage_data_subtype_gender, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$gender)) {
+  gender_stage_plot_df <- tumour_data$sub_types$gender[[grp]]
+
+  cat( "\n\n## Early Staging - ", grp, "  (Gender)\n\n", sep = "")
+
+  spc_chart <- ptd_spc(gender_stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       facet_field = Demographic,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r Stage_data_subtype_age, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$age)) {
+  age_stage_plot_df <- tumour_data$sub_types$age[[grp]]
+
+  cat( "\n\n## Early Staging - ", grp, " (Age-Group)\n\n", sep = "")
+
+  spc_chart <- ptd_spc(age_stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       facet_field = Demographic,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r Stage_data_subtype_ethnicity, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$ethnicity)) {
+  ethnicity_stage_plot_df <- tumour_data$sub_types$ethnicity[[grp]]
+
+  cat( "\n\n## Early Staging - ", grp, " (Ethnicity)\n\n", sep = "")
+
+  spc_chart <- ptd_spc(ethnicity_stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       facet_field = Demographic,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r Stage_data_subtype_deprivation, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$deprivation)) {
+  deprivation_stage_plot_df <- tumour_data$sub_types$deprivation[[grp]]
+
+  cat( "\n\n## Early Staging - ", grp, " (Deprivation)\n\n", sep = "")
+
+  spc_chart <- ptd_spc(deprivation_stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       facet_field = Demographic,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r Stage_data_subtype_route, eval=has_staging_demographics && uses_subtype_staging, fig.width=20, fig.height=8, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis', comment=NA}
+
+for (grp in names(tumour_data$sub_types$route)) {
+  route_stage_plot_df <- tumour_data$sub_types$route[[grp]]
+
+  cat( "\n\n## Early Staging - ", grp, " (Route to Diagnosis)\n\n", sep = "")
+
+  spc_chart <- ptd_spc(route_stage_plot_df,
+                      value_field = `Statistic (12m)`,
+                       date_field = Date,
+                       facet_field = Demographic,
+                       improvement_direction = "increase") %>%
+            plot(fixed_y_axis_multiple = TRUE, x_axis_breaks = "3 months")
+
+  spc_chart_with_hline <- spc_chart +
+    geom_hline(yintercept=EARLY_STAGING_TARGET_PC, linetype="dashed", color = "red", size=1) +
+    theme(strip.text = element_text(size = 14)) +
+    theme(axis.title = element_text(size = 16)) +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(size = 12, angle = 50, hjust = 1)) +
+    theme(legend.text=element_text(size=12),
+          plot.caption = element_text(size = 14)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(
+      x = "Date",
+      y = "Early Stage Diagnoses (%)",
+      title = NULL,
+      caption = SLIDE_FOOTER_STAGING_CHART
+      )
+
+  print(spc_chart_with_hline)
+
+  cat("\n\n")
+}
+```
+
+```{r lwbc_section_header, eval=has_lwbc, results='asis', echo=FALSE}
+# Whole LWBC section gated on config$lwbc being non-null. A tumour with no
+# LWBC data (e.g. non-specific symptoms) sets lwbc: null and this, and
+# everything below, is skipped.
+cat("\n\n# Living With and Beyond Cancer\n\n")
+```
+
+```{r lwbc_subtype_q_table, eval=has_lwbc && uses_subtype_lwbc, fig.width=26, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# Split LWBC (see the null / scalar / array convention in config/tumours.yml's
+# header): one "LWBC - Summary" slide per group, mirroring
+# stage_completeness_subtype_bar above. When config$lwbc is not split, this
+# whole chunk is skipped and the flat lwbc_q_table chunk below runs instead.
+for (grp in names(tumour_data$lwbc)) {
+  lwbc_grp <- tumour_data$lwbc[[grp]]
+  if (is.null(lwbc_grp$table)) next
+
+  cat(paste0("\n\n## LWBC - Summary ", lwbc_latest_q, " (", lwbc_latest_q_months, ") - ", grp, "\n\n"))
+
+  most_recent_df <- lwbc_grp$table %>%
+    filter(`Cancer Alliance` == alliance_name,
+           Date == lwbc_latest_q) %>%
+    mutate(`Total HNA's Offered` = as.character(`Total HNA's Offered`),
+           `PCSP Total` = as.character(`PCSP Total`),
+           `Total PA's Assessed` = as.character(`Total PA's Assessed`),
+           `% HNA's Accepted` = as.character(round(`% HNA's Accepted`, 0)),
+           `% PCSP's Completed` = as.character(round(`% PCSP's Completed`, 0)),
+           `% PA's Achieved` = as.character(round(`% PA's Achieved`, 0)),
+           `No. End of Treatment Summaries` = as.character(`No. End of Treatment Summaries`))
+
+  most_recent_df[is.na(most_recent_df)] <- "-"
+
+  most_recent_df <- most_recent_df %>%
+    mutate(`% HNA's Accepted` = paste0(`% HNA's Accepted`, " %"),
+           `% PCSP's Completed` = paste0(`% PCSP's Completed`, " %"),
+            `% PA's Achieved` = paste0(`% PA's Achieved`, " %")) %>%
+    ungroup() %>%
+    select(-c(`Cancer Alliance`, Date, `Tumour Group`)) %>%
+   rename(`Total Physical Activity Assessments` = `Total PA's Assessed`,
+    `% Meeting Guidance Level` = `% PA's Achieved`)
+
+  table <- flextable(most_recent_df) %>%
+    vline(j = c(1,3,5,7), border = border, part = "all") %>%
+    width(j = 1, width = 2.5) %>%
+    width(j = c(2,4,6), width = 1) %>%
+    width(j = c(3,5,7,8), width = 1.5)
+
+  # hline's row selection is out of range when there is only one row
+  if (nrow(most_recent_df) > 1) {
+    table <- hline(table, i = nrow(most_recent_df)-1, border = border)
+  }
+
+  table <- align(table, align = "center", part = "all")
+  table <- fontsize(table, size = 10, part = "all")
+
+  flextable::flextable_to_rmd(table)
+  cat("\n\n")
+}
+```
+
+```{r lwbc_subtype_ts, eval=has_lwbc && uses_subtype_lwbc, fig.width=26, fig.height=10, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+for (grp in names(tumour_data$lwbc)) {
+  lwbc_grp <- tumour_data$lwbc[[grp]]
+  if (is.null(lwbc_grp$plot)) next
+
+  plot_data <- lwbc_grp$plot %>%
+    filter(`Cancer Alliance` == alliance_name)
+  # Group has rows for other alliances only: no chart, so no slide.
+  if (nrow(plot_data) == 0) next
+
+  cat("\n\n## LWBC - Summary Time Series -", grp, "\n\n")
+
+  axis_scale <- lwbc_dual_axis_scale(plot_data)
+  scale_factor <- axis_scale$scale_factor
+
+  p <- ggplot(plot_data, aes(Date)) +
+    geom_line(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 1.5) +
+    geom_point(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 4)  +
+    geom_line(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 1.5) +
+    geom_point(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 4) +
+    geom_line(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 1.5) +
+    geom_point(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 4) +
+    scale_y_continuous(
+      name = "HNAs Accepted (%) / PCSP Completed (%)",
+      limits = c(0, axis_scale$y_max),
+      sec.axis = sec_axis(~ .* scale_factor, name = "No. EOTS's Completed")) +
+    scale_x_date(date_breaks = "1 month", date_labels =  "%b %Y")  +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_text(size = 16)) +
+    theme(legend.text=element_text(size=18),
+          legend.position = 'bottom',
+          legend.title = element_text(size = 16)) +
+    scale_color_manual(values = c("% HNA's Accepted" = "#009E73", "% PCSP's Completed" = "#E69F00", "No. EOTS's Completed" = '#CC79A7'))
+
+  print(p)
+  cat("\n\n")
+}
+```
+
+```{r lwbc_subtype_pa_ts, eval=has_lwbc && uses_subtype_lwbc, fig.width=30, fig.height=12, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+for (grp in names(tumour_data$lwbc)) {
+  lwbc_grp <- tumour_data$lwbc[[grp]]
+  if (is.null(lwbc_grp$pa_plot)) next
+
+  cat("\n\n## LWBC - PA Time Series -", grp, "\n\n")
+
+  plot_data <- lwbc_grp$pa_plot %>%
+    filter(`Cancer Alliance` == alliance_name) %>%
+    rename(`Total Physical Activity Assessments` = `Total Assessed`,
+          `% Meeting Guidance Level` = `% PA's Achieved`)
+
+  p <- ggplot(plot_data, aes(Date)) +
+    geom_line(aes(y = `% Meeting Guidance Level`,
+                  color = "% Meeting Guidance Level"), size = 1.5) +
+    geom_point(aes(y = `% Meeting Guidance Level`,
+                   color = "% Meeting Guidance Level"), size = 4) +
+    geom_line(aes(y = `Total Physical Activity Assessments`,
+                  color = "Total Physical Activity Assessments"), size = 1.5) +
+    geom_point(aes(y = `Total Physical Activity Assessments`,
+                   color = "Total Physical Activity Assessments"), size = 4) +
+    scale_y_continuous(
+      name = "% Meeting Guidance Level",
+      sec.axis = sec_axis(~ ., name = "Total Physical Activity Assessments")
+    ) +
+    scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+    scale_color_manual(values = c(
+      "% Meeting Guidance Level" = "#009E73",
+      "Total Physical Activity Assessments" = "#E69F00" )) +
+    labs(x = "Date", color = "Legend") +
+    coord_cartesian(ylim = c(0, 100)) +
+    theme(
+      axis.text = element_text(size = 16),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title = element_text(size = 16),
+      legend.text = element_text(size = 18),
+      legend.position = "bottom",
+      legend.title = element_text(size = 16)
+    )
+
+  print(p)
+  cat("\n\n")
+}
+```
+
+```{r lwbc_subtype_trust_ts, eval=has_lwbc && uses_subtype_lwbc, fig.width=26, fig.height=10, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+for (grp in names(tumour_data$lwbc)) {
+  lwbc_grp <- tumour_data$lwbc[[grp]]
+  if (is.null(lwbc_grp$trust_plot)) next
+
+  plot_data <- lwbc_grp$trust_plot %>%
+    filter(`Cancer Alliance` == alliance_name)
+  # Group has rows for other alliances only: no chart, so no slide.
+  if (nrow(plot_data) == 0) next
+
+  cat("\n\n## LWBC - Summary Time Series (per Trust) -", grp, "\n\n")
+
+  axis_scale <- lwbc_dual_axis_scale(plot_data)
+  scale_factor <- axis_scale$scale_factor
+
+  p <- ggplot(plot_data, aes(Date)) +
+    geom_line(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 1.5) +
+    geom_point(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 4)  +
+    geom_line(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 1.5) +
+    geom_point(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 4) +
+    geom_line(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 1.5) +
+    geom_point(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 4) +
+    scale_y_continuous(
+      name = "HNAs Accepted (%) / PCSPs Completed (%)",
+      limits = c(0, axis_scale$y_max),
+      sec.axis = sec_axis(~ .* scale_factor, name = "No. EOTS's Completed")) +
+    scale_x_date(date_breaks = "1 month", date_labels =  "%b %Y")  +
+    theme(axis.text = element_text(size = 16),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_text(size = 16)) +
+    theme(legend.text=element_text(size=18),
+          legend.position = 'bottom',
+          legend.title = element_text(size = 16)) +
+    scale_color_manual(values = c("% HNA's Accepted" = "#009E73", "% PCSP's Completed" = "#E69F00", "No. EOTS's Completed" = '#CC79A7')) +
+    facet_wrap(~`Trust Name`) +
+    theme(strip.text = element_text(size = 14))
+
+  print(p)
+  cat("\n\n")
+}
+```
+
+```{r lwbc_subtype_trust_pa_ts, eval=has_lwbc && uses_subtype_lwbc, fig.width=30, fig.height=12, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+for (grp in names(tumour_data$lwbc)) {
+  lwbc_grp <- tumour_data$lwbc[[grp]]
+  if (is.null(lwbc_grp$trust_pa_plot)) next
+
+  cat("\n\n## LWBC - PA Time Series (per Trust) -", grp, "\n\n")
+
+  plot_data <- lwbc_grp$trust_pa_plot %>%
+    filter(`Cancer Alliance` == alliance_name) %>%
+   rename(`Total Physical Activity Assessments` = `Total Assessed`,
+          `% Meeting Guidance Level` = `% PA's Achieved`)
+
+  p <- ggplot(plot_data, aes(Date)) +
+    geom_line(aes(y = `% Meeting Guidance Level`,
+                  color = "% Meeting Guidance Level"), size = 1.5) +
+    geom_point(aes(y = `% Meeting Guidance Level`,
+                   color = "% Meeting Guidance Level"), size = 4) +
+    geom_line(aes(y = `Total Physical Activity Assessments`,
+                  color = "Total Physical Activity Assessments"), size = 1.5) +
+    geom_point(aes(y = `Total Physical Activity Assessments`,
+                   color = "Total Physical Activity Assessments"), size = 4) +
+    scale_y_continuous(
+      name = "% Meeting Guidance Level",
+      sec.axis = sec_axis(~ ., name = "Total Physical Activity Assessments")
+    ) +
+    coord_cartesian(ylim = c(0, 100)) +
+    scale_x_date(
+      date_breaks = "1 month",
+      date_labels = "%b %Y"
+    ) +
+    scale_color_manual(values = c(
+      "% Meeting Guidance Level" = "#009E73",
+      "Total Physical Activity Assessments" = "#E69F00"
+    )) +
+    labs(x = "Date", color = "Legend") +
+    facet_wrap(vars(`Trust Name`)) +
+    theme(
+      axis.title = element_text(size = 18),
+      axis.text = element_text(size = 16),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.text = element_text(size = 18),
+      legend.position = "bottom",
+      strip.text = element_text(size = 16)
+    )
+
+  print(p)
+  cat("\n\n")
+}
+```
+
+```{r lwbc_q_table_header, eval=has_lwbc_table, results='asis', echo=FALSE}
+cat(paste0("\n\n## LWBC - Summary ", lwbc_latest_q, " (", lwbc_latest_q_months, ")\n\n"))
+```
+
+```{r lwbc_q_table, eval=has_lwbc_table, fig.width=26, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE}
+
+most_recent_df <- tumour_data$lwbc$table %>%
+  filter(`Cancer Alliance` == alliance_name,
+         Date == lwbc_latest_q) %>%
+  mutate(`Total HNA's Offered` = as.character(`Total HNA's Offered`),
+         `PCSP Total` = as.character(`PCSP Total`),
+         `Total PA's Assessed` = as.character(`Total PA's Assessed`),
+         `% HNA's Accepted` = as.character(round(`% HNA's Accepted`, 0)),
+         `% PCSP's Completed` = as.character(round(`% PCSP's Completed`, 0)),
+         `% PA's Achieved` = as.character(round(`% PA's Achieved`, 0)),
+         `No. End of Treatment Summaries` = as.character(`No. End of Treatment Summaries`))
+
+most_recent_df[is.na(most_recent_df)] <- "-"
+
+most_recent_df <- most_recent_df %>%
+  mutate(`% HNA's Accepted` = paste0(`% HNA's Accepted`, " %"),
+         `% PCSP's Completed` = paste0(`% PCSP's Completed`, " %"),
+          `% PA's Achieved` = paste0(`% PA's Achieved`, " %")) %>%
+  ungroup() %>%
+  select(-c(`Cancer Alliance`, Date, `Tumour Group`)) %>%
+ rename(`Total Physical Activity Assessments` = `Total PA's Assessed`, 
+  `% Meeting Guidance Level` = `% PA's Achieved`)
+
+table <- flextable(most_recent_df) %>%
+  vline(j = c(1,3,5,7), border = border, part = "all") %>%
+  width(j = 1, width = 2.5) %>%
+  width(j = c(2,4,6), width = 1) %>%
+  width(j = c(3,5,7,8), width = 1.5)
+
+# hline's row selection is out of range when there is only one row
+if (nrow(most_recent_df) > 1) {
+  table <- hline(table, i = nrow(most_recent_df)-1, border = border)
+}
+
+table <- align(table, align = "center", part = "all")
+table <- fontsize(table, size = 10, part = "all")
+
+table
+```
+
+```{r lwbc_ts, eval=has_lwbc_plot, fig.width=26, fig.height=10, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+plot_data <- tumour_data$lwbc$plot %>%
+  filter(`Cancer Alliance` == alliance_name)
+
+# Tumour has rows for other alliances only: no chart, so no slide. The
+# heading is written here (not in its own chunk) so it is skipped too.
+if (nrow(plot_data) > 0) {
+cat("\n\n## LWBC - Summary Time Series\n\n")
+
+axis_scale <- lwbc_dual_axis_scale(plot_data)
+scale_factor <- axis_scale$scale_factor
+
+plot = ggplot(plot_data, aes(Date)) +
+  geom_line(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 1.5) +
+  geom_point(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 4)  +
+  geom_line(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 1.5) +
+  geom_point(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 4) +
+  geom_line(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 1.5) +
+  geom_point(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 4) +
+  scale_y_continuous(
+    name = "HNAs Accepted (%) / PCSP Completed (%)",
+    limits = c(0, axis_scale$y_max),
+    sec.axis = sec_axis(~ .* scale_factor, name = "No. EOTS's Completed")) +
+  scale_x_date(date_breaks = "1 month", date_labels =  "%b %Y")  +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 16)) +
+  theme(legend.text=element_text(size=18),
+        legend.position = 'bottom',
+        legend.title = element_text(size = 16)) +
+  scale_color_manual(values = c("% HNA's Accepted" = "#009E73", "% PCSP's Completed" = "#E69F00", "No. EOTS's Completed" = '#CC79A7'))
+
+print(plot)
+cat("\n\n")
+}
+
+```
+
+```{r lwbc_pa_ts_header, eval=has_lwbc_pa_plot, results='asis', echo=FALSE}
+cat("\n\n## LWBC - PA Time Series\n\n")
+```
+
+```{r lwbc_pa_ts, eval=has_lwbc_pa_plot, fig.width=30, fig.height=12, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+
+plot_data <- tumour_data$lwbc$pa_plot %>%
+  filter(`Cancer Alliance` == alliance_name) %>%
+  rename(`Total Physical Activity Assessments` = `Total Assessed`,
+        `% Meeting Guidance Level` = `% PA's Achieved`)
+
+plot <- ggplot(plot_data, aes(Date)) +
+  geom_line(aes(y = `% Meeting Guidance Level`,
+                color = "% Meeting Guidance Level"), size = 1.5) +
+  geom_point(aes(y = `% Meeting Guidance Level`,
+                 color = "% Meeting Guidance Level"), size = 4) +
+  geom_line(aes(y = `Total Physical Activity Assessments`,
+                color = "Total Physical Activity Assessments"), size = 1.5) +
+  geom_point(aes(y = `Total Physical Activity Assessments`,
+                 color = "Total Physical Activity Assessments"), size = 4) +
+
+  scale_y_continuous(
+    name = "% Meeting Guidance Level",
+    sec.axis = sec_axis(~ ., name = "Total Physical Activity Assessments")
+  ) +
+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+
+  scale_color_manual(values = c(
+    "% Meeting Guidance Level" = "#009E73",
+    "Total Physical Activity Assessments" = "#E69F00" )) +
+
+  labs(x = "Date", color = "Legend") +
+  coord_cartesian(ylim = c(0, 100)) +
+  theme(
+    axis.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 16),
+    legend.text = element_text(size = 18),
+    legend.position = "bottom",
+    legend.title = element_text(size = 16)
+  )
+
+plot
+
+```
+
+```{r lwbc_trust_ts, eval=has_lwbc_trust_plot, fig.width=26, fig.height=10, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+plot_data <- tumour_data$lwbc$trust_plot %>%
+  filter(`Cancer Alliance` == alliance_name)
+
+# Tumour has rows for other alliances only: no chart, so no slide. The
+# heading is written here (not in its own chunk) so it is skipped too.
+if (nrow(plot_data) > 0) {
+cat("\n\n## LWBC - Summary Time Series (per Trust)\n\n")
+
+axis_scale <- lwbc_dual_axis_scale(plot_data)
+scale_factor <- axis_scale$scale_factor
+
+plot = ggplot(plot_data, aes(Date)) +
+  geom_line(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 1.5) +
+  geom_point(aes(y = `% HNA's Accepted`, color = "% HNA's Accepted"), size = 4)  +
+  geom_line(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 1.5) +
+  geom_point(aes(y = `% PCSP's Completed`, color = "% PCSP's Completed"), size = 4) +
+  geom_line(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 1.5) +
+  geom_point(aes(y = `No. EOTS's Completed` / scale_factor, color = "No. EOTS's Completed"), size = 4) +
+  scale_y_continuous(
+    name = "HNAs Accepted (%) / PCSPs Completed (%)",
+    limits = c(0, axis_scale$y_max),
+    sec.axis = sec_axis(~ .* scale_factor, name = "No. EOTS's Completed")) +
+  scale_x_date(date_breaks = "1 month", date_labels =  "%b %Y")  +
+  theme(axis.text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 16)) +
+  theme(legend.text=element_text(size=18),
+        legend.position = 'bottom',
+        legend.title = element_text(size = 16)) +
+  scale_color_manual(values = c("% HNA's Accepted" = "#009E73", "% PCSP's Completed" = "#E69F00", "No. EOTS's Completed" = '#CC79A7')) +
+  facet_wrap(~`Trust Name`) +
+  theme(strip.text = element_text(size = 14))
+
+print(plot)
+cat("\n\n")
+}
+
+```
+
+```{r lwbc_trust_pa_ts_header, eval=has_lwbc_trust_pa_plot, results='asis', echo=FALSE}
+cat("\n\n## LWBC - PA Time Series (per Trust)\n\n")
+```
+
+```{r lwbc_trust_pa_ts, eval=has_lwbc_trust_pa_plot, fig.width=30, fig.height=12, dev='svglite', fig.ext='svg', echo=FALSE, message=FALSE, warning=FALSE}
+
+plot_data <- tumour_data$lwbc$trust_pa_plot %>%
+  filter(
+    `Cancer Alliance` == alliance_name) %>%
+ rename(`Total Physical Activity Assessments` = `Total Assessed`,
+        `% Meeting Guidance Level` = `% PA's Achieved`)
+
+
+plot <- ggplot(plot_data, aes(Date)) +
+
+  geom_line(aes(y = `% Meeting Guidance Level`,
+                color = "% Meeting Guidance Level"), size = 1.5) +
+  geom_point(aes(y = `% Meeting Guidance Level`,
+                 color = "% Meeting Guidance Level"), size = 4) +
+
+  geom_line(aes(y = `Total Physical Activity Assessments`,
+                color = "Total Physical Activity Assessments"), size = 1.5) +
+  geom_point(aes(y = `Total Physical Activity Assessments`,
+                 color = "Total Physical Activity Assessments"), size = 4) +
+
+  scale_y_continuous(
+    name = "% Meeting Guidance Level",
+    sec.axis = sec_axis(~ ., name = "Total Physical Activity Assessments")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_date(
+    date_breaks = "1 month",
+    date_labels = "%b %Y"
+  ) +
+
+  scale_color_manual(values = c(
+    "% Meeting Guidance Level" = "#009E73",
+    "Total Physical Activity Assessments" = "#E69F00"
+  )) +
+
+  labs(x = "Date", color = "Legend") +
+
+  facet_wrap(vars(`Trust Name`)) +
+
+  theme(
+    axis.title = element_text(size = 18),
+    axis.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.text = element_text(size = 18),
+    legend.position = "bottom",
+    strip.text = element_text(size = 16)
+  )
+
+plot
+ 
+```
+
+# Further Information
+
+## Data Sources
+
+The Alliance does not collect or control the data presented within this report.
+It is collated from a variety of sources, the majority of which are populated
+by submissions that individual providers make to national systems such as [Cancer Waiting Times](https://nwwcancerwaitingtimes.sdcs.digital.nhs.uk/) (CWT) or [Cancer Outcomes Services Dataset](https://digital.nhs.uk/ndrs/data/data-sets/cosd) (COSD).
+
+### Cancer Waiting Times
+- [NHSE Public Cancer Waiting Times Statistics](https://www.england.nhs.uk/statistics/statistical-work-areas/cancer-waiting-times/)
+- NHSE Data Extract for Cancer Alliances - circulated internally to alliances via email.
+- Fed by: provider submissions to [Cancer Waiting Times system](https://nwwcancerwaitingtimes.sdcs.digital.nhs.uk/).
+
+### Staging Completeness
+- [NDRS Staging Completeness Dashboard](https://digital.nhs.uk/ndrs/data/data-outputs/staging-completeness-dashboard)
+- Fed by: provider submissions to [COSD](https://digital.nhs.uk/ndrs/data/data-sets/cosd).
+
+### Staging including Early Stage Inequalities
+- [NDRS Rapid Cancer Registration Dataset (RCRD) extracts for cancer alliances](https://nhs.sharepoint.com/:f:/r/sites/msteams_275dcb/Shared%20Documents/RCRD/Data_Extracts?csf=1&web=1&e=kwRI5v)
+- Fed by: provider submissions to systems including [CWT](https://nwwcancerwaitingtimes.sdcs.digital.nhs.uk/), [COSD](https://digital.nhs.uk/ndrs/data/data-sets/cosd), [HES](https://digital.nhs.uk/data-and-information/data-tools-and-services/data-services/hospital-episode-statistics), [SACT](https://digital.nhs.uk/ndrs/data/data-sets/sact), and [RTDS](https://digital.nhs.uk/ndrs/data/data-sets/rtds).
+
+### Living With and Beyond Cancer
+- [NDRS Data Quality and Insights Hub](https://digital.nhs.uk/ndrs/data/data-outputs/data-quality-and-insights-hub?area=lwbc)
+- Fed by provider submissions to [COSD](https://digital.nhs.uk/ndrs/data/data-sets/cosd) (v10 only).
+
+## Resources
+
+- See our [FutureNHS workspace](https://future.nhs.uk/MidlandsCancerAlliancesAnalytics/groupHome) for more reports, including our dashboards:
+    - [Cancer Waiting Times dashboard](https://public.tableau.com/app/profile/west.midlands.cancer.alliance/viz/CWT-Dashboard/Intro)
+    - [Early Diagnosis Staging dashboard](https://public.tableau.com/app/profile/west.midlands.cancer.alliance/viz/EDStagingDashboard/Home)
+    
+- For an exhaustive list of cancer data sources, see our ['resources' page](https://quibey.com/wmca/cancer-datasets-and-dashboards).
+
+# Appendix
+
+## Dataset Category Mapping
+
+```{r category_mapping_table, echo=FALSE, message=FALSE, warning=FALSE}
+# tumour_data$category_mapping is built in main.R (build_category_mapping_table()),
+# using the same field gating as the processing functions above, so a row only
+# appears here if that dataset field was actually used to build this pack.
+mapping_tbl <- flextable(tumour_data$category_mapping) %>%
+  bold(part = "header") %>%
+  width(j = "Tumour", width = 1.8) %>%
+  width(j = "Dataset field", width = 1.3) %>%
+  width(j = c("Selected value(s)", "All possible values"), width = 3.3) %>%
+  fontsize(size = 8, part = "all") %>%
+  valign(valign = "top", part = "body") %>%
+  add_footer_lines(paste(
+    "For each source dataset this tumour type's data is filtered from,",
+    "shows every raw value the dataset contains and which value(s)",
+    "config/tumours.yml selects to build this pack."
+  ))
+
+mapping_tbl
+```

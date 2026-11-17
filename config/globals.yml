@@ -1,0 +1,45 @@
+# Global scalar constants
+# =======================
+# Loaded by R/load_globals.R, which assigns each top-level key as a global
+# variable. Keep top-level keys as the exact R identifier used in code.
+#
+# Note: variable names cannot start with a digit (so 31DAY_STANDARD is invalid).
+
+# ----------------------------------------------------------------------------
+# Cancer Waiting Time standards (decimal)
+# ----------------------------------------------------------------------------
+CWT_STANDARD_FDS: 0.8
+CWT_STANDARD_31DAY: 0.96
+CWT_STANDARD_62DAY: 0.85
+
+# Same standards as integer percentages (for percentage comparisons)
+CWT_STANDARD_FDS_PC: 80
+CWT_STANDARD_31DAY_PC: 96
+CWT_STANDARD_62DAY_PC: 85
+
+# ----------------------------------------------------------------------------
+# Staging targets
+# ----------------------------------------------------------------------------
+STAGING_COMPLETENESS_TARGET_PC: 80
+STAGING_COMPLETENESS_TARGET: 0.8
+EARLY_STAGING_TARGET_PC: 75
+
+# ----------------------------------------------------------------------------
+# Treatment Variation targets (integer percentages)
+# ----------------------------------------------------------------------------
+TV_LUNG_TARGET: 70
+TV_LOWER_GI_TARGET: 50
+TV_BREAST_TARGET: 25
+TV_GYNAE_TARGET: 80
+
+# ----------------------------------------------------------------------------
+# Slide captions / footers
+# ----------------------------------------------------------------------------
+SLIDE_FOOTER_CWT_TABLE: "Compliance figures below the performance target are highlighted yellow."
+SLIDE_FOOTER_CWT_BENCHMARKING_TABLE: "Alliance figures are calculated from provider numbers, so may differ from usual ICB-aggregated numbers.\nCompliance figures below the performance target are highlighted yellow."
+SLIDE_FOOTER_CWT_CHART: "The red dashed line represents the target."
+SLIDE_FOOTER_FDS_END_REASON: "Compliance figures below the performance target are highlighted yellow. \nCompliance of NA means that Trust had no FDS clock stops for the diagnosis/ruling out of cancer, compliance of 0 means there were FDS clock stops however none were within 28 days."
+SLIDE_FOOTER_TV_TABLE: "Figures below the target are highlighted yellow."
+SLIDE_FOOTER_TV_CHART: "The red dashed line represents the target."
+SLIDE_FOOTER_STAGING_COMP_CHART: "The red dashed line represents the target."
+SLIDE_FOOTER_STAGING_CHART: "The red dashed line represents the target."

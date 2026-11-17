@@ -1,0 +1,620 @@
+# =============================================================================
+# Tumour configuration
+# =============================================================================
+# Defines all tumour types used in the data pack. Loaded by R/load_tumour_config.R.
+# Helper functions there (get_tumour_config, get_name_in_dataset, has_split, ...)
+# operate on the loaded list.
+#
+# To add a new tumour type:
+#   1. Add an entry below (alphabetical by `name`), setting every field listed
+#      under "Fields" — none may be omitted; a field with no data is written
+#      as `null`, not left out.
+#   2. Run validate_all_configs(). It rejects a missing field, an unrecognised
+#      field, and an unknown parent-less entry reference.
+#   3. Run the data pack generation script. No new RMarkdown file is needed:
+#      scripts/main.R loops get_tumour_keys() and renders the parameterised
+#      scripts/Tumour_Data_Pack_Template.Rmd for each key.
+#
+# There is no separate "sub-type" entity any more. A tumour that used to be
+# split into sub-types (e.g. Urology into Urological/Prostate) is still ONE
+# entry here; the split is expressed by giving the relevant field(s) an array
+# instead of a single string (see "The null / scalar / array convention"
+# below). Different fields on the same tumour can split differently, or not
+# at all — e.g. Urology splits staging_demographics, staging_completeness AND
+# the 31/62-day public benchmarking filter, but NOT the FDS filter or the
+# 31/62-day detailed filter that actually drives its CWT chart figures, which
+# stay single values.
+#
+# -----------------------------------------------------------------------------
+# The null / scalar / array convention
+# -----------------------------------------------------------------------------
+# Applies to these 11 fields: cwt_fds_public, cwt_fds_detailed,
+# cwt_31day_public, cwt_31day_detailed, cwt_62day_public, cwt_62day_detailed,
+# cwt_62day_public_comm, staging_completeness, staging_demographics, lwbc,
+# treatment_variation.
+#
+#   null    This tumour has no data for this field. Gates both processing and
+#           the corresponding slide(s)/section — see the field's own entry
+#           below for exactly what it gates.
+#   string  A single raw value: the exact category text as it appears in the
+#           source dataset (not necessarily the same as `name` — e.g. FDS
+#           extracts always say "Suspected ...", never a plain display name).
+#           One slide / one section, no split.
+#   array   A split: one sub-section per element, in the order given (= slide
+#           order). Each element is used BOTH as the raw filter value AND as
+#           the display name/slide-title suffix for its sub-section — there is
+#           no separate display-name mechanism, so an element reading
+#           awkwardly as a title (e.g. a public dataset's own wording) is an
+#           accepted cost of this simpler model, not a bug.
+#
+# There is no implicit fallback between fields (e.g. an unset *_detailed value
+# no longer silently reuses the matching *_public value, or `name`): every
+# field is independent and must be set explicitly to whatever its own source
+# dataset actually uses, even when that duplicates another field's value
+# verbatim. This was a deliberate trade of verbosity for safety — the
+# previous fallback chain is exactly what caused a production crash (an
+# unset, unfallback-able `day_62_comm` emptying a filter and erroring).
+#
+# -----------------------------------------------------------------------------
+# Fields
+# -----------------------------------------------------------------------------
+#   name                           Display name. Shown in slide titles and
+#                                  used as the default text nowhere else now —
+#                                  every dataset field below is independent of
+#                                  it. Must still be unique.
+#
+#   cwt_fds_public                 Raw category in the PUBLIC CWT release
+#   cwt_31day_public               (NHSE Cancer Waiting Times (CWT) System,
+#   cwt_62day_public               public release — see config/data_sources.yml).
+#                                  Always used to filter the national
+#                                  benchmarking extract (latest_public_2_months_df)
+#                                  for the Benchmarking slides
+#                                  (process_benchmarking(), R/tumour_processing.R)
+#                                  — set null whenever
+#                                  cwt_public_data_exists_for_benchmarking is
+#                                  false, since there is no verified bucket to
+#                                  name. ALSO used to build the pack's own
+#                                  FDS/31-day/62-day chart figures, but only
+#                                  for whichever standard(s) have their
+#                                  matching cwt_*_detailed field set to null
+#                                  (see below) — e.g. HPB's 31-day/62-day
+#                                  figures come from here because the detailed
+#                                  extract has no Hepatobiliary-specific
+#                                  bucket, while its FDS figures still come
+#                                  from cwt_fds_detailed.
+#
+#   cwt_fds_detailed               Raw category in the DETAILED CWT extract
+#   cwt_31day_detailed             (internal — see config/data_sources.yml).
+#   cwt_62day_detailed             Builds that standard's own pack figures
+#                                  when set (process_fds_raw(),
+#                                  process_31_day_raw(), process_62_day_raw(),
+#                                  R/tumour_processing.R). Set null when the
+#                                  detailed extract has no bucket that
+#                                  distinguishes this tumour — that standard's
+#                                  figures then come from cwt_*_public instead
+#                                  (which must be non-null in that case; at
+#                                  least one of the pair is always required).
+#                                  A null cwt_fds_detailed specifically also
+#                                  means there is no detailed FDS category to
+#                                  filter Rule-in/Rule-out or the FDS Pathway
+#                                  End Reason breakdown on — both are skipped
+#                                  for that tumour, since they only ever read
+#                                  detailed data regardless of which source
+#                                  the main FDS figure uses. 31-day and 62-day
+#                                  have no equivalent always-detailed
+#                                  consumer, so going public-sourced for them
+#                                  affects nothing else.
+#
+#   cwt_62day_public_comm          Raw category in the public release's own
+#                                  commissioner-level (alliance-wide) sheet —
+#                                  a separate value from cwt_62day_public (the
+#                                  provider-level value) because that is how
+#                                  the public release itself splits them.
+#                                  Feeds the 62-Day Summary slide's
+#                                  commissioner-level text. Required (non-null)
+#                                  exactly when cwt_62day_detailed is null
+#                                  (62-day is public-sourced); null otherwise,
+#                                  since the detailed-sourced case derives that
+#                                  text from the detailed extract instead
+#                                  (derive_62_day_comm_from_detailed()).
+#                                  FDS and 31-day have no equivalent field:
+#                                  the same provider-level value serves both
+#                                  purposes for them.
+#
+#   cwt_public_data_exists_for_benchmarking
+#                                  Whether the public CWT benchmarking release
+#                                  has a matching bucket for this tumour at
+#                                  all. A data-availability fact, independent
+#                                  of display_benchmarking_* below. Gates
+#                                  whether cwt_fds_public/cwt_31day_public/
+#                                  cwt_62day_public can be non-null — including
+#                                  when one of them is being used as a
+#                                  standard's own figures, not just for
+#                                  Benchmarking.
+#
+#   display_benchmarking_fds       Whether to show that standard's Benchmarking
+#   display_benchmarking_31day     slide, given the data exists. An editorial
+#   display_benchmarking_62day     choice, not a data-availability fact — e.g.
+#                                  an FDS-only pathway such as non-specific
+#                                  symptoms sets the 31-day/62-day keys false
+#                                  because those comparisons are meaningless
+#                                  for it, even though the public data exists.
+#                                  Still requires
+#                                  cwt_public_data_exists_for_benchmarking to
+#                                  be true to take any effect.
+#
+#   staging_completeness           Raw category in the staging completeness
+#                                  extract (NDRS Rapid Cancer Registration
+#                                  Dataset). Gates staging completeness
+#                                  processing and slides.
+#
+#   staging_demographics           Raw category in the staging (early
+#                                  diagnosis) extract (NDRS Rapid Cancer
+#                                  Registration Dataset). Gates the Early
+#                                  Staging / inequalities slides.
+#
+#   lwbc                           Raw category in the Living With & Beyond
+#                                  Cancer tables (NDRS Cancer Outcomes and
+#                                  Services Data set). Gates LWBC processing,
+#                                  the LWBC slides, AND the Contents slide's
+#                                  LWBC entry (previously three separate, and
+#                                  occasionally inconsistent, signals).
+#
+#   treatment_variation            Raw category (`Tumour Site`) in the
+#                                  treatment variation data (tv_long; source:
+#                                  National Cancer Audit Collaborating Centre).
+#                                  Gates TV processing and slides. Replaces
+#                                  both the old has_treatment_variation flag
+#                                  and treatment_variation_data: the previous
+#                                  treatment_variation_data held only a dataset
+#                                  label never actually read by the filter
+#                                  (rows were matched on `name` instead) — this
+#                                  field's value is the real, read filter.
+#   treatment_variation_target     Target proportion for TV, or null.
+#   treatment_variation_target_name  Name of the global constant holding the
+#                                  TV target percentage (config/globals.yml),
+#                                  or null. Read by the Rmd template for the
+#                                  target line and below-target highlighting.
+#
+#   cwt_provider_exclusions        Trust codes excluded from CWT provider data
+#                                  for this tumour, or null for none.
+#   cwt_provider_ordering          null, or a list of groups. Each group has a
+#                                  `codes` list, plus optional `name`. When
+#                                  set, CWT tables/charts group trusts (in
+#                                  order), sorting within each group by
+#                                  compliance desc; trusts not in any group
+#                                  sort last. When `name` is set, chart labels
+#                                  are prefixed "[Name] ".
+#
+# Required/validated (validate_tumour_config(), R/load_tumour_config.R):
+#   every one of the fields listed above must be present on every entry —
+#   a missing field is a validation error, and so is an unrecognised one.
+
+brain_cns:
+  name: "Brain and CNS"
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected brain/central nervous system tumours"
+  cwt_31day_detailed: "Brain/Central Nervous System"
+  cwt_62day_detailed: "Brain/Central Nervous System"
+  # CWT Public
+  cwt_fds_public: null
+  cwt_31day_public: null
+  cwt_62day_public: null
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: false   # No Brain/CNS in public data
+  display_benchmarking_fds: false
+  display_benchmarking_31day: false
+  display_benchmarking_62day: false
+  # Staging
+  staging_completeness: null
+  staging_demographics: null
+  # LWBC
+  lwbc: "Brain and CNS"
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+brain_cns_neurosurgery:
+  name: "Brain and CNS Neurosurgery"
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected brain/central nervous system tumours"
+  cwt_31day_detailed: "Brain/Central Nervous System"
+  cwt_62day_detailed: "Brain/Central Nervous System"
+  # CWT Public
+  cwt_fds_public: null
+  cwt_31day_public: null
+  cwt_62day_public: null
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: false   # No Brain/CNS in public data
+  display_benchmarking_fds: false
+  display_benchmarking_31day: false
+  display_benchmarking_62day: false
+  # Staging
+  staging_completeness: null
+  staging_demographics: null
+  # LWBC
+  lwbc: "Brain and CNS"
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions:
+    - RRJ
+    - RQ3
+    - RNA
+    - RL4
+    - RXK
+    - RBK
+    - RLT
+    - RJC
+    - RWP
+    - RLQ
+    - RL1
+    - RXW
+  cwt_provider_ordering: null
+
+breast:
+  name: Breast
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected breast cancer"
+  cwt_31day_detailed: "Breast"
+  cwt_62day_detailed: "Breast"
+  # CWT Public
+  cwt_fds_public: "Suspected breast cancer"
+  cwt_31day_public: "Breast"
+  cwt_62day_public: "Breast"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Breast"
+  staging_demographics: "Breast"
+  # LWBC
+  lwbc: "Breast"
+  # Treatment Variation
+  treatment_variation: "Breast"
+  treatment_variation_target: 0.25
+  treatment_variation_target_name: TV_BREAST_TARGET
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+gynae:
+  name: Gynaecological
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected gynaecological cancer"
+  cwt_31day_detailed: "Gynaecological"
+  cwt_62day_detailed: "Gynaecological"
+  # CWT Public
+  cwt_fds_public: "Suspected gynaecological cancer"
+  cwt_31day_public: "Gynaecological"
+  cwt_62day_public: "Gynaecological"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Gynaecological"
+  staging_demographics: ["Gynaecological", "Ovary", "Uterus"]
+  # LWBC
+  lwbc: "Gynaecological"
+  # Treatment Variation
+  treatment_variation: "Gynaecological"
+  treatment_variation_target: 0.80
+  treatment_variation_target_name: TV_GYNAE_TARGET
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+# haem:
+#   name: "Haematology"
+#   # CWT Detailed
+#   cwt_fds_detailed: ["Suspected acute leukaemia", "Suspected haematological malignancies (excluding acute leukaemia)"]
+#   cwt_31day_detailed: "Haematological"
+#   cwt_62day_detailed: ["Acute leukaemia", "Haematological (Excluding Acute Leukaemia)"]
+#   # CWT Public
+#   cwt_fds_public: ["Suspected acute leukaemia", "Suspected haematological malignancies (excluding acute leukaemia)"]
+#   cwt_31day_public: ["Haematological - Lymphoma", "Haematological - Other (a)"]
+#   cwt_62day_public: ["Haematological - Lymphoma", "Haematological - Other (a)"]
+#   cwt_62day_public_comm: null
+#   # CWT Benchmarking
+#   cwt_public_data_exists_for_benchmarking: true
+#   display_benchmarking_fds: true
+#   display_benchmarking_31day: true
+#   display_benchmarking_62day: true
+#   # Staging
+#   staging_completeness: "Head and Neck"
+#   staging_demographics: ["Blood cancer (haematological neoplasms)", "Hodgkin lymphoma", "Myeloma", "Non-Hodgkin lymphoma"]
+#   # LWBC
+#   lwbc: ["Chronic Lymphocytic Leukemia (CLL)", "CLL", "Leukaemia", "Lymphoma", "Myeloma"]
+#   # Treatment Variation
+#   treatment_variation: null
+#   treatment_variation_target: null
+#   treatment_variation_target_name: null
+#   # Provider customisation
+#   cwt_provider_exclusions: null
+#   cwt_provider_ordering: null
+
+head_neck:
+  name: "Head and Neck"
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected head & neck cancer"
+  cwt_31day_detailed: "Head & Neck"
+  cwt_62day_detailed: "Head & Neck"
+  # CWT Public
+  cwt_fds_public: "Suspected head & neck cancer"
+  cwt_31day_public: "Head & Neck"
+  cwt_62day_public: "Head & Neck"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Head and Neck"
+  staging_demographics: null
+  # LWBC
+  lwbc: "Head and Neck"
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions:
+    - RL1
+    - RRJ
+    - RLT
+  cwt_provider_ordering:
+    - name: Diag
+      codes: [RXW, RNA, RWP, RLQ, RJC, RBK, RXK]
+    - name: Surg
+      codes: [RRK, RKB, RL4, RJE]
+
+# hpb:
+#   name: "Hepatobiliary"
+#   # CWT Detailed
+#   cwt_fds_detailed: "Suspected upper gastrointestinal cancer"
+#   cwt_31day_detailed: null
+#   cwt_62day_detailed: null
+#   # CWT Public
+#   cwt_fds_public: "Suspected upper gastrointestinal cancer"
+#   cwt_31day_public: "Upper Gastrointestinal - Hepatobiliary"
+#   cwt_62day_public: "Upper Gastrointestinal - Hepatobiliary"
+#   cwt_62day_public_comm: "Upper Gastrointestinal - Hepatobiliary"
+#   # CWT Benchmarking
+#   cwt_public_data_exists_for_benchmarking: true
+#   display_benchmarking_fds: true
+#   display_benchmarking_31day: true
+#   display_benchmarking_62day: true
+#   # Staging
+#   staging_completeness: "HPB and Gall Bladder"
+#   staging_demographics: ["Liver", "Pancreas"]
+#   # LWBC
+#   lwbc: ["HPB and Gall Bladder", "Pancreatic"]
+#   # Treatment Variation
+#   treatment_variation: ["Pancreatic (Metric 1)"]
+#   treatment_variation_target: 0.65
+#   treatment_variation_target_name: 
+#   # Provider customisation
+#   cwt_provider_exclusions: null
+#   cwt_provider_ordering: null
+
+lower_gi:
+  name: "Lower Gastrointestinal"
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected lower gastrointestinal cancer"
+  cwt_31day_detailed: "Lower Gastrointestinal"
+  cwt_62day_detailed: "Lower Gastrointestinal"
+  # CWT Public
+  cwt_fds_public: "Suspected lower gastrointestinal cancer"
+  cwt_31day_public: "Lower Gastrointestinal"
+  cwt_62day_public: "Lower Gastrointestinal"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Lower GI"
+  staging_demographics: ["Colon", "Rectal"]
+  # LWBC
+  lwbc: "Lower GI"
+  # Treatment Variation
+  treatment_variation: "Lower Gastrointestinal"
+  treatment_variation_target: 0.50
+  treatment_variation_target_name: TV_LOWER_GI_TARGET
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+lung:
+  name: Lung
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected lung cancer"  
+  cwt_31day_detailed: "Lung"
+  cwt_62day_detailed: "Lung"
+  # CWT Public
+  cwt_fds_public: "Suspected lung cancer"
+  cwt_31day_public: "Lung"
+  cwt_62day_public: "Lung"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Lung"
+  staging_demographics: "Lung"
+  # LWBC
+  lwbc: "Lung"
+  # Treatment Variation
+  treatment_variation: "Lung"
+  treatment_variation_target: 0.70
+  treatment_variation_target_name: TV_LUNG_TARGET
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+nss:
+  name: "Non-specific Symptoms"
+  # cWT Detailed
+  cwt_fds_detailed: "Suspected cancer - referral to non-specific symptom clinic"
+  cwt_31day_detailed: "Non-specific Symptoms"
+  cwt_62day_detailed: "Non-specific Symptoms"
+  # CWT Public
+  cwt_fds_public: "Suspected cancer - non-specific symptoms"
+  cwt_31day_public: "Non-specific Symptoms"
+  cwt_62day_public: "Non-specific Symptoms"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: false
+  display_benchmarking_62day: false
+  # Staging
+  staging_completeness: null
+  staging_demographics: null
+  # LWBC
+  lwbc: null
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+sarcoma:
+  name: Sarcoma
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected sarcoma"
+  cwt_31day_detailed: "Sarcoma"
+  cwt_62day_detailed: "Sarcoma"
+  # CWT Public
+  cwt_fds_public: "Suspected sarcoma"
+  cwt_31day_public: "Sarcoma"
+  cwt_62day_public: "Sarcoma"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  # There is no staging demographics data - source .rds contains 38,000 rows
+  # but they are all 'NA' across columns `Cancer group` and `Cancer group (broad)`.
+  staging_completeness: null
+  staging_demographics: null
+  # LWBC
+  lwbc: "Bone and Soft Tissue"
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+skin:
+  name: Skin
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected skin cancer"
+  cwt_31day_detailed: "Skin"
+  cwt_62day_detailed: "Skin"
+  # CWT Public
+  cwt_fds_public: "Suspected skin cancer"
+  cwt_31day_public: "Skin"
+  cwt_62day_public: "Skin"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Melanoma Skin"
+  staging_demographics: "Melanoma"
+  # LWBC
+  lwbc: "Skin"
+  # Treatment variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions:   # RJAH, ROH
+    - RL1
+    - RRJ
+    - RLT
+  cwt_provider_ordering: null
+
+upper_gi:
+  name: "Upper Gastrointestinal"
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected upper gastrointestinal cancer"
+  cwt_31day_detailed: "Upper Gastrointestinal"  
+  cwt_62day_detailed: "Upper Gastrointestinal"
+  # CWT Public
+  cwt_fds_public: "Suspected upper gastrointestinal cancer"
+  cwt_31day_public: "Upper Gastrointestinal - Oesophagus & Stomach"
+  cwt_62day_public: "Upper Gastrointestinal - Oesophagus & Stomach"
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: "Oesophagogastric"
+  staging_demographics: ["Oesophago-gastric", "Upper GI excl. OG"]
+  # LWBC
+  lwbc: "Oesophagogastric"
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
+
+urology:
+  name: Urology
+  # CWT Detailed
+  cwt_fds_detailed: "Suspected urological malignancies (excluding testicular)"
+  cwt_31day_detailed: Urological
+  cwt_62day_detailed: "Urological (Excluding Testicular)"
+  # CWT Public
+  cwt_fds_public: "Suspected urological malignancies (excluding testicular)"
+  cwt_31day_public: ["Urological - Other (a)", "Urological - Prostate"]
+  cwt_62day_public: ["Urological - Other (a)", "Urological - Prostate"]
+  cwt_62day_public_comm: null
+  # CWT Benchmarking
+  cwt_public_data_exists_for_benchmarking: true
+  display_benchmarking_fds: true
+  display_benchmarking_31day: true
+  display_benchmarking_62day: true
+  # Staging
+  staging_completeness: ["Urological", "Prostate"]
+  staging_demographics: ["Urological excl. prostate", "Prostate"]
+  # LWBC
+  lwbc: "Urological"
+  # Treatment Variation
+  treatment_variation: null
+  treatment_variation_target: null
+  treatment_variation_target_name: null
+  # Provider customisation
+  cwt_provider_exclusions: null
+  cwt_provider_ordering: null
